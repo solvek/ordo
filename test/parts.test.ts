@@ -144,6 +144,13 @@ describe("notifiers", () => {
       /exited 3/,
     );
   });
+
+  it("reports the exit code when the command closes stdin unread", async () => {
+    const notifier = commandPlugin.create({ plugin: "command", command: "exit 3" }, { env: {} });
+    await expect(
+      notifier.send({ kind: "error", order: "Book", text: "x".repeat(1024 * 1024) }),
+    ).rejects.toThrow(/exited 3/);
+  });
 });
 
 describe("control socket", () => {

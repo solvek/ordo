@@ -152,10 +152,23 @@ export const commandPlugin: NotifierPlugin = {
           child.stderr.on("data", (data: string) => {
             stderr += data;
           });
-          child.on("error", reject);
+          let settled = false;
+          const fail = (error: Error): void => {
+            if (settled) return;
+            settled = true;
+            reject(error);
+          };
+          child.on("error", fail);
           child.on("close", (code) => {
+            if (settled) return;
+            settled = true;
             if (code === 0) resolve();
             else reject(new Error(`notify command exited ${String(code)}: ${stderr.trim()}`));
+          });
+          // A command that exits without reading closes the pipe. The exit code is the result.
+          child.stdin.on("error", (error: Error) => {
+            if ("code" in error && error.code === "EPIPE") return;
+            fail(error);
           });
           child.stdin.end(noticeText(notice));
         });
