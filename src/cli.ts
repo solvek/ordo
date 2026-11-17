@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { claudeHost } from "./claude.ts";
+import { openaiEnvProblems, openaiHost } from "./openai.ts";
 import { registrations, register, sendControl, serveControl } from "./control.ts";
 import { Dispatcher, type RunResult } from "./dispatcher.ts";
 import { acquireLock, lockHolder, orderPaths, readOrderText, writeAtomic } from "./files.ts";
@@ -19,9 +20,10 @@ import {
   parseOrder,
   textHash,
 } from "./order.ts";
+import { type SessionHost } from "./session.ts";
 import { type StatusReport, fileStatus, formatStatus } from "./status.ts";
 
-const HELP = `ordo — run a long piece of work as short Claude Code sessions
+const HELP = `ordo — run a long piece of work as short model sessions
 
 Usage:
   ordo start <order.yaml> [--pool N] [--use-api-key]   run in the background
@@ -37,10 +39,12 @@ Usage:
   ordo notify-test <order.yaml>                         send a test notification
 
 Environment: ORDO_POOL, ORDO_LOG_LEVEL (console, default warn), ORDO_FILE_LOG_LEVEL
-(default info), and what the notifiers of the order need. A .env file in the current
-directory is read first.`;
+(default info), OPENAI_API_KEY when an order uses the openai plugin, and what the
+notifiers of the order need. A .env file in the current directory is read first.`;
 
 const CLAUDE_PLUGIN = "claude-code";
+const OPENAI_PLUGIN = "openai";
+const KNOWN_PLUGINS = [CLAUDE_PLUGIN, OPENAI_PLUGIN];
 
 async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -133,7 +137,7 @@ async function run(
   const dispatcher = new Dispatcher({
     file,
     cwd: process.cwd(),
-    hosts: { [CLAUDE_PLUGIN]: claudeHost({ useApiKey }) },
+    hosts: hostsOf(useApiKey),
     log: logger.log,
     notifiers: (order) => createNotifiers(order.settings?.notify ?? [], { env: process.env }),
     ...(pool === undefined ? {} : { pool }),
@@ -302,13 +306,23 @@ async function answer(file: string, id: string, text: string): Promise<number> {
   return 0;
 }
 
+function hostsOf(useApiKey: boolean): Record<string, SessionHost> {
+  return {
+    [CLAUDE_PLUGIN]: claudeHost({ useApiKey }),
+    [OPENAI_PLUGIN]: openaiHost({ env: process.env }),
+  };
+}
+
 function check(file: string): number {
   const order = parseOrder(readOrderText(file));
   const problems: string[] = [];
-  for (const plugin of orderPlugins(order)) {
-    if (plugin !== CLAUDE_PLUGIN)
-      problems.push(`no model plugin ${plugin} (known: ${CLAUDE_PLUGIN})`);
+  const plugins = orderPlugins(order);
+  for (const plugin of plugins) {
+    if (!KNOWN_PLUGINS.includes(plugin)) {
+      problems.push(`no model plugin ${plugin} (known: ${KNOWN_PLUGINS.join(", ")})`);
+    }
   }
+  if (plugins.has(OPENAI_PLUGIN)) problems.push(...openaiEnvProblems(process.env));
   try {
     createNotifiers(order.settings?.notify ?? [], { env: process.env });
   } catch (error: unknown) {

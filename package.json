@@ -1,7 +1,7 @@
 {
   "name": "ordo-run",
   "version": "0.1.0",
-  "description": "Runs a long piece of work as a queue of short Claude Code sessions, with the memory in a YAML file.",
+  "description": "Runs a long piece of work as a queue of short model sessions, with the memory in a YAML file.",
   "license": "MIT",
   "private": true,
   "type": "module",

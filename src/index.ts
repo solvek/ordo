@@ -1,6 +1,12 @@
 // Ordo as a library: the dispatcher, the order format, the session and notifier interfaces.
 export { claudeHost, type ClaudeHostOptions } from "./claude.ts";
 export {
+  openaiEnvProblems,
+  openaiHost,
+  type OpenAIFetch,
+  type OpenAIHostOptions,
+} from "./openai.ts";
+export {
   ControlRequest,
   ControlResponse,
   registrations,

@@ -1,6 +1,6 @@
 # Ordo
 
-Ordo runs a long piece of work as a queue of short Claude Code sessions. The memory of the work lives in a YAML file, the _order_, not in a conversation. Each session starts with a clean context, gets one task and the current state from the file, hands in a short report in a fixed schema, and ends. The dispatcher spends no model tokens itself: it starts sessions, keeps time, writes down what they hand in, and calls a planner session when the plan needs to change.
+Ordo runs a long piece of work as a queue of short model sessions. The memory of the work lives in a YAML file, the _order_, not in a conversation. Each session starts with a clean context, gets one task and the current state from the file, hands in a short report in a fixed schema, and ends. The dispatcher spends no model tokens itself: it starts sessions, keeps time, writes down what they hand in, and calls a planner session when the plan needs to change.
 
 It is not tied to code or git: reading scanned documents, translating a book, sorting a folder of notes or migrating a codebase are all orders.
 
@@ -11,13 +11,13 @@ It is not tied to code or git: reading scanned documents, translating a book, so
 - **Worker**: a session that does one task. It reports `outcome` (`done`, `failed` or `blocked`), a `summary`, a `proposal` for the backlog, `questions` for the owner when blocked, and a `statePatch`.
 - **Replan**: when a worker proposes a change, fails, is interrupted, or the owner answers its questions, a _planner_ session rewrites the backlog (the tasks not started yet). Tasks that ran are never changed. A plain success with no proposal goes straight to the next task.
 - **Time**: the dispatcher writes reminders into the live session at minutes 30, 45 and 50, and closes it at 55. The planner gets 10 minutes. All of this is configurable.
-- **Usage limit**: a session cut off by the Claude usage limit is not a failed task. The dispatcher waits until the limit resets, then lets the planner decide how to finish the interrupted work.
+- **Usage limit**: a session cut off by the account usage limit is not a failed task. The dispatcher waits until the limit resets, then lets the planner decide how to finish the interrupted work.
 - **Questions**: a blocked task waits for the owner; tasks that do not depend on it go on. The owner gets a notification and answers with `ordo answer`. An optional _decider_ model may answer first.
 - **Restart**: everything the dispatcher knows is in the file. Started again, it continues where it stopped; tasks a dead process left running are marked interrupted and replanned.
 
 ## Install
 
-Node.js 24 or later and a Claude Code login on the machine (`claude` signed in) are required.
+Node.js 24 or later is required. The `claude-code` plugin needs a Claude Code login on the machine (`claude` signed in). The `openai` plugin needs `OPENAI_API_KEY`.
 
 ```bash
 git clone https://github.com/solvek/ordo.git
@@ -84,9 +84,10 @@ Console output shows warnings and errors only; `-v` or `ORDO_LOG_LEVEL=info` sho
 ## Be aware
 
 - **Permissions.** Sessions run without permission prompts, with the same access to files and commands as the user who started the dispatcher. Run Ordo only where that is acceptable. Tools that make no sense unattended (questions to the user, scheduling, background monitors) are disabled by default; see `settings.disallowedTools`.
-- **Billing.** By default sessions use the Claude Code login of the machine, and `ANTHROPIC_API_KEY` is not passed into them, so a key in the environment does not switch them to API billing. `--use-api-key` passes it. Check Anthropic's current terms for how unattended use counts against your plan.
-- **Memory.** On Linux a session is a likelier target for the out-of-memory killer than the dispatcher. Several workers at once multiply the load; keep `pool` at 1 when tasks are heavy.
-- **One model plugin.** Only `claude-code` exists today. The `SessionHost` interface is the place for others (an API plugin for tasks that need no tools, other agents).
+- **Billing.** By default `claude-code` sessions use the Claude Code login of the machine, and `ANTHROPIC_API_KEY` is not passed into them, so a key in the environment does not switch them to API billing. `--use-api-key` passes it. Check Anthropic's current terms for how unattended use counts against your plan.
+- **OpenAI.** The `openai` plugin calls the Responses API with `OPENAI_API_KEY` (`OPENAI_BASE_URL` overrides the host). A session has no tools: it only sees the messages and returns the schema, and the API is asked not to store the call. A short rate limit is retried; a quota, or a reset of a minute or more, is the usage limit. The API does not report a dollar cost, so those sessions leave `costUsd` empty. `effort` is sent as `reasoning.effort`.
+- **Memory.** On Linux a Claude Code session is a likelier target for the out-of-memory killer than the dispatcher. Several workers at once multiply the load; keep `pool` at 1 when tasks are heavy.
+- **Model plugins.** `claude-code` and `openai`. The `SessionHost` interface is the place for others.
 
 ## Development
 
@@ -96,7 +97,7 @@ pnpm typecheck && pnpm lint && pnpm test
 pnpm ordo check examples/translate-book.yaml   # run the CLI from source
 ```
 
-Code layout: `src/order.ts` (file format and pure changes), `src/dispatcher.ts` (the loop), `src/prompts.ts` (texts sent to sessions), `src/claude.ts` (the Claude Code plugin), `src/notify.ts`, `src/control.ts` (socket), `src/cli.ts`. Tests use a scripted session host and a manual clock; they never call a model. Rules for contributors and coding agents: [AGENTS.md](AGENTS.md).
+Code layout: `src/order.ts` (file format and pure changes), `src/dispatcher.ts` (the loop), `src/prompts.ts` (texts sent to sessions), `src/claude.ts` (the Claude Code plugin), `src/openai.ts` (the OpenAI plugin), `src/notify.ts`, `src/control.ts` (socket), `src/cli.ts`. Tests use a scripted session host and a manual clock; they never call a model. Rules for contributors and coding agents: [AGENTS.md](AGENTS.md).
 
 ## License
 

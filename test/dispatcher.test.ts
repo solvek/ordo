@@ -540,7 +540,7 @@ describe("dispatcher: sessions", () => {
     const transcript = join(orderPaths(file).sessions, "0001-worker-ch1.log");
     const text = readFileSync(transcript, "utf8");
     expect(text).toContain("prompt | You are a worker of Ordo");
-    expect(text).toContain("key sk-ant-… here");
+    expect(text).toContain("key sk-… here");
     expect(text).not.toContain("abc123");
   });
 });

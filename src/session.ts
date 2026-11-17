@@ -8,7 +8,8 @@ export type SessionRole = "worker" | "planner" | "decider";
 
 export interface SessionUsage {
   turns: number;
-  costUsd: number;
+  /** Dollars, when the host reports a cost. */
+  costUsd?: number;
   durationMs: number;
 }
 
@@ -36,7 +37,7 @@ export class SessionLimitError extends Error {
 
 /** How full a usage window of the account is, as the host reports it. */
 export interface UsageWindow {
-  /** For Claude: `five_hour`, `seven_day`, … */
+  /** For Claude: `five_hour`, `seven_day`. For OpenAI: `requests`, `tokens`. */
   type: string;
   /** 0..1, when known. */
   utilization: number | undefined;

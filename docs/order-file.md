@@ -28,9 +28,9 @@ tasks:
 
 Every task, the planner and the decider name their model as `{plugin, name, effort}`:
 
-- `plugin`: the model plugin. Today only `claude-code` (a Claude Code session through the Agent SDK, with all its tools).
-- `name`: the model name the plugin understands, such as `claude-sonnet-5-5`.
-- `effort`: optional, `low`, `medium`, `high`, `xhigh` or `max`.
+- `plugin`: the model plugin. `claude-code` is a Claude Code session through the Agent SDK, with its tools. `openai` is the OpenAI Responses API, with no tools: the session only sees the messages and returns the schema. It needs `OPENAI_API_KEY` in the environment (`OPENAI_BASE_URL` overrides the host).
+- `name`: the model name the plugin understands, such as `claude-sonnet-5-5` or the id the OpenAI API lists.
+- `effort`: optional, `low`, `medium`, `high`, `xhigh` or `max`. For `openai` this is sent as `reasoning.effort`.
 
 The planner names the model of each task it adds. Its prompt lists the models the order already uses and tells it not to give tasks its own model unless asked.
 

@@ -57,8 +57,10 @@ describe("workerPrompt", () => {
 
 describe("transcript", () => {
   it("cuts key-shaped secrets and keeps the rest of the line", () => {
-    expect(redact("key sk-ant-api03-AbC_1-x end")).toBe("key sk-ant-… end");
+    expect(redact("key sk-ant-api03-AbC_1-x end")).toBe("key sk-… end");
+    expect(redact("key sk-proj-abc_123 end")).toBe("key sk-… end");
     expect(redact("ANTHROPIC_API_KEY=abc123 next")).toBe("ANTHROPIC_API_KEY=… next");
+    expect(redact("OPENAI_API_KEY=sk-proj-abc next")).toBe("OPENAI_API_KEY=… next");
     expect(redact("Authorization: Bearer xyz.abc")).toBe("Authorization: Bearer …");
     expect(redact("https://api.telegram.org/bot123:AA-bb_cc/sendMessage")).toBe(
       "https://api.telegram.org/bot…/sendMessage",
@@ -205,6 +207,22 @@ describe("cli", () => {
     const result = ordo(["check", file], tempDir());
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("no model plugin elsewhere");
+  });
+
+  it("requires the OpenAI key when the order uses that plugin", () => {
+    const file = tempOrder(orderText(task("ch1")).replaceAll("plugin: test", "plugin: openai"));
+    const missing = ordo(["check", file], tempDir());
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("OPENAI_API_KEY is not set");
+    const present = ordo(["check", file], tempDir(), { OPENAI_API_KEY: "sk-test" });
+    expect(present.stderr).toBe("");
+    expect(present.status).toBe(0);
+    const badBase = ordo(["check", file], tempDir(), {
+      OPENAI_API_KEY: "sk-test",
+      OPENAI_BASE_URL: "not a url",
+    });
+    expect(badBase.status).toBe(1);
+    expect(badBase.stderr).toContain("OPENAI_BASE_URL is not an http(s) URL");
   });
 
   it("answers a question in the file when no dispatcher runs", () => {

@@ -57,6 +57,7 @@ import {
   SessionLimitError,
   type SessionRequest,
   type SessionRole,
+  type SessionUsage,
   type Timer,
   type UsageWindow,
   systemClock,
@@ -551,11 +552,7 @@ export class Dispatcher {
         this.order = withReplan(this.order, { reason: "failed", task: id, text: "" });
       }
     } else {
-      const usage = end.answer.usage;
-      const extra =
-        usage === undefined
-          ? base
-          : { ...base, turns: usage.turns, costUsd: Math.round(usage.costUsd * 10_000) / 10_000 };
+      const extra = withUsage(base, end.answer.usage);
       const reply = parseReply(WorkerReply, end.answer);
       if (reply === null) {
         status = "failed";
@@ -958,6 +955,20 @@ export class Dispatcher {
 
 function minutesSince(start: number, now: number): number {
   return Math.round(((now - start) / 60_000) * 10) / 10;
+}
+
+/** Turns always; a dollar cost only when the host reported one. */
+function withUsage(
+  base: { minutes: number },
+  usage: SessionUsage | undefined,
+): { minutes: number; turns?: number; costUsd?: number } {
+  if (usage === undefined) return base;
+  const cost = usage.costUsd;
+  return {
+    ...base,
+    turns: usage.turns,
+    ...(cost === undefined ? {} : { costUsd: Math.round(cost * 10_000) / 10_000 }),
+  };
 }
 
 function parseReply<T>(

@@ -3,8 +3,9 @@ const TOOL_CAP = 8000;
 
 export function redact(text: string): string {
   return text
-    .replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-…")
+    .replace(/sk-[A-Za-z0-9_-]+/g, "sk-…")
     .replace(/(ANTHROPIC_API_KEY=)\S+/g, "$1…")
+    .replace(/(OPENAI_API_KEY=)\S+/g, "$1…")
     .replace(/(Bearer )\S+/gi, "$1…")
     .replace(/(\/bot)\d+:[A-Za-z0-9_-]+/g, "$1…");
 }
