@@ -1,0 +1,36 @@
+# A work order with tasks that may run in parallel (pool 2): sort a folder of notes.
+title: Sort the research notes
+context: |
+  notes/inbox/ holds about 600 text notes with no order.
+  Move each note into notes/topics/<topic>/ and add it to notes/topics/<topic>/index.md
+  with one line: file name and a summary of at most 15 words.
+  Never delete a note. A note that fits no topic stays in the inbox.
+planner: { plugin: claude-code, name: claude-opus-5-5, effort: low }
+settings:
+  pool: 2
+  minutes: { remind: 20, wrap: 30, finish: 35, stop: 40, replan: 5 }
+state: {}
+tasks:
+  - id: topics
+    title: Choose the topics
+    model: { plugin: claude-code, name: claude-sonnet-5-5 }
+    prompt: |
+      Skim the notes and choose 8 to 15 topics. Write them to notes/topics/README.md.
+      statePatch: topics (the list of topic folder names).
+  - id: sort-a-m
+    title: Sort notes a–m
+    after: [topics]
+    model: { plugin: claude-code, name: claude-haiku-5-5 }
+    prompt: Sort the inbox notes whose file names start with a to m.
+  - id: sort-n-z
+    title: Sort notes n–z
+    after: [topics]
+    model: { plugin: claude-code, name: claude-haiku-5-5 }
+    prompt: Sort the inbox notes whose file names start with n to z, or with a digit.
+  - id: review
+    title: Review the indexes
+    after: [sort-a-m, sort-n-z]
+    model: { plugin: claude-code, name: claude-sonnet-5-5 }
+    prompt: |
+      Read every index.md. Fix lines that do not match their note. List the notes left in
+      the inbox in summary.

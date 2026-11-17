@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+*.log
+# Runtime directory of an order: lock, log, session transcripts.
+*.ordo/
+*.tmp

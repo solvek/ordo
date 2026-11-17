@@ -1,0 +1,24 @@
+# A work order: translate a book chapter by chapter. The first task only plans; the planner
+# turns its proposal into one task per chapter. Run it from the directory that holds book/.
+title: Translate "The Lighthouse Keeper" into Spanish
+context: |
+  The book is in book/en/, one Markdown file per chapter (01.md … 24.md).
+  Write the translation to book/es/ with the same file names.
+  Keep the glossary in book/glossary.md: every name and term with its chosen Spanish form.
+  Read the glossary before you start and add to it as you go.
+  Style: plain modern Spanish, keep the paragraphs and the Markdown as they are.
+planner: { plugin: claude-code, name: claude-opus-5-5, effort: medium }
+settings:
+  pool: 1
+  notify:
+    - plugin: telegram
+state: {}
+tasks:
+  - id: plan
+    title: Plan the translation
+    model: { plugin: claude-code, name: claude-sonnet-5-5, effort: high }
+    prompt: |
+      Look at the chapters: their length and what is hard in them (verse, dialect, wordplay).
+      Start book/glossary.md with the names of the people and places.
+      In proposal, describe the tasks to add: which chapters each one translates (about
+      40 minutes of work each), which model and effort, and a final review task.

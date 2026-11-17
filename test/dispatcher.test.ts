@@ -1,0 +1,546 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { orderPaths } from "../src/files.ts";
+import { type Order, parseOrder } from "../src/order.ts";
+import { PAUSE_TEXT } from "../src/prompts.ts";
+import { SessionLimitError } from "../src/session.ts";
+import {
+  BIG,
+  SMALL,
+  cleanTemp,
+  done,
+  flush,
+  harness,
+  orderText,
+  started,
+  task,
+  tempOrder,
+} from "./helpers.ts";
+
+afterEach(cleanTemp);
+
+function saved(file: string): Order {
+  return parseOrder(readFileSync(file, "utf8"));
+}
+
+function statuses(file: string): string[] {
+  return saved(file).tasks.map((item) => `${item.id}:${item.status}`);
+}
+
+const backlogTask = (id: string, after?: string[]): Record<string, unknown> => ({
+  id,
+  title: `Translate ${id}`,
+  model: { plugin: "test", name: "small-model" },
+  prompt: `Translate ${id}.`,
+  ...(after === undefined ? {} : { after }),
+});
+
+describe("dispatcher: the loop", () => {
+  it("runs task after task without a replan when the proposals are empty", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    expect(statuses(file)).toEqual(["ch1:running", "ch2:pending"]);
+    h.host.answer(done("Chapter 1.", { statePatch: { chapter: 1 } }), undefined, {
+      turns: 7,
+      costUsd: 0.12345,
+      durationMs: 1000,
+    });
+    await flush();
+    expect(statuses(file)).toEqual(["ch1:done", "ch2:running"]);
+    h.host.answer(done("Chapter 2.", { statePatch: { chapter: 2, extra: true } }));
+    const result = await h.dispatcher.result;
+    expect(result).toEqual({ reason: "done" });
+    expect(h.host.roles()).toEqual(["worker", "worker"]);
+    const order = saved(file);
+    expect(order.state).toEqual({ chapter: 2, extra: true });
+    expect(order.tasks[0]?.report).toMatchObject({
+      summary: "Chapter 1.",
+      turns: 7,
+      costUsd: 0.1235,
+    });
+    expect(h.notifier.notices.map((notice) => notice.kind)).toEqual(["done"]);
+    expect(existsSync(orderPaths(file).lock)).toBe(false);
+  });
+
+  it("asks the planner to replace the backlog when a worker proposes a change", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    h.host.answer(done("Translated.", { proposal: "Split ch2 in two." }));
+    await flush();
+    const planner = h.host.lastOpen();
+    expect(planner.request.role).toBe("planner");
+    expect(planner.request.model).toBe("big-model");
+    expect(planner.request.prompt).toContain("Split ch2 in two.");
+    expect(planner.request.prompt).toContain("You run as big-model (medium) via test");
+    expect(saved(file).replan).toEqual([
+      { reason: "proposal", task: "ch1", text: "Split ch2 in two." },
+    ]);
+    h.host.answer({
+      state: { split: true },
+      backlog: [backlogTask("ch2a"), backlogTask("ch2b", ["ch2a"])],
+    });
+    await flush();
+    expect(statuses(file)).toEqual(["ch1:done", "ch2a:running", "ch2b:pending"]);
+    expect(saved(file).replan).toBeUndefined();
+    expect(saved(file).state).toEqual({ split: true });
+    h.host.answer(done());
+    await flush();
+    h.host.answer(done());
+    expect((await h.dispatcher.result).reason).toBe("done");
+  });
+
+  it("calls the planner when the task fails, and when the reply is not readable", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    h.host.answer({ outcome: "failed", summary: "Source missing.", proposal: "" });
+    await flush();
+    expect(h.host.lastOpen().request.role).toBe("planner");
+    expect(h.host.lastOpen().request.prompt).toContain("Task ch1 (Translate ch1) failed");
+    h.host.answer({ state: {}, backlog: [backlogTask("ch2")] });
+    await flush();
+    h.host.answerText("I translated it, honestly.");
+    await flush();
+    const order = saved(file);
+    expect(order.tasks[1]?.status).toBe("failed");
+    expect(order.tasks[1]?.report?.summary).toBe(
+      "the reply is not readable: I translated it, honestly.",
+    );
+    expect(h.host.lastOpen().request.role).toBe("planner");
+  });
+
+  it("reads a reply given as fenced JSON text", async () => {
+    const file = tempOrder(orderText(task("ch1")));
+    const h = await started(file);
+    h.host.answerText('```json\n{"outcome":"done","summary":"Done.","proposal":""}\n```');
+    expect((await h.dispatcher.result).reason).toBe("done");
+  });
+
+  it("keeps the backlog and the owed replan when the planner repeats an id that ran, and stops after two tries", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    h.host.answer(done("Translated.", { proposal: "redo ch1" }));
+    await flush();
+    h.host.answer({ state: {}, backlog: [backlogTask("ch1")] });
+    await flush();
+    expect(h.host.lastOpen().request.role).toBe("planner");
+    h.host.answer({ state: {}, backlog: [backlogTask("ch1")] });
+    const result = await h.dispatcher.result;
+    expect(result.reason).toBe("replan-failed");
+    expect(result.detail).toMatch(/already ran/);
+    expect(statuses(file)).toEqual(["ch1:done", "ch2:pending"]);
+    expect(saved(file).replan).toHaveLength(1);
+    expect(h.notifier.notices.map((notice) => notice.kind)).toEqual(["error"]);
+  });
+
+  it("refuses a backlog with a model plugin it does not have", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    h.host.answer(done("Translated.", { proposal: "use another plugin" }));
+    await flush();
+    const bad = { ...backlogTask("ch2"), model: { plugin: "nowhere", name: "x" } };
+    h.host.answer({ state: {}, backlog: [bad] });
+    await flush();
+    h.host.answer({ state: {}, backlog: [bad] });
+    const result = await h.dispatcher.result;
+    expect(result.detail).toMatch(/no model plugin nowhere/);
+    expect(statuses(file)).toEqual(["ch1:done", "ch2:pending"]);
+  });
+
+  it("stops as stuck when pending tasks wait for a task that will not be done", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2", "    after: [ch1]\n")}`));
+    const h = await started(file);
+    h.host.answer({ outcome: "failed", summary: "No.", proposal: "" });
+    await flush();
+    h.host.answer({ state: {}, backlog: [backlogTask("ch2", ["ch1"])] });
+    const result = await h.dispatcher.result;
+    expect(result.reason).toBe("stuck");
+    expect(result.detail).toContain("ch2");
+  });
+});
+
+describe("dispatcher: time", () => {
+  it("reminds at 30, 45 and 50 minutes and closes the session at 55", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    const worker = h.host.lastOpen();
+    await h.clock.advanceMinutes(30);
+    expect(worker.sent).toHaveLength(1);
+    expect(worker.sent[0]?.priority).toBe("next");
+    expect(worker.sent[0]?.text).toContain("30 minutes have passed");
+    expect(worker.sent[0]?.text).toContain("minute 45");
+    await h.clock.advanceMinutes(15);
+    expect(worker.sent[1]).toMatchObject({ priority: "now" });
+    expect(worker.sent[1]?.text).toContain("45 minutes have passed");
+    await h.clock.advanceMinutes(5);
+    expect(worker.sent[2]?.text).toContain("50 minutes have passed");
+    expect(worker.sent[2]?.text).toContain("closed at minute 55");
+    await h.clock.advanceMinutes(5);
+    expect(worker.closed).toBe(true);
+    const order = saved(file);
+    expect(order.tasks[0]?.status).toBe("interrupted");
+    expect(order.tasks[0]?.report).toMatchObject({ reason: "time", minutes: 55 });
+    expect(h.host.lastOpen().request.role).toBe("planner");
+  });
+
+  it("takes the minutes from the order settings, into the prompt and the reminders", async () => {
+    const file = tempOrder(
+      orderText(
+        task("ch1"),
+        "settings:\n  minutes: { remind: 10, wrap: 20, finish: 25, stop: 28 }\n",
+      ),
+    );
+    const h = await started(file);
+    const worker = h.host.lastOpen();
+    expect(worker.request.prompt).toContain("At minute 10 estimate what is left. At minute 20");
+    await h.clock.advanceMinutes(10);
+    expect(worker.sent[0]?.text).toContain("10 minutes have passed");
+    await h.clock.advanceMinutes(18);
+    expect(saved(file).tasks[0]?.report?.summary).toContain("minute 28");
+  });
+
+  it("counts a planner that runs past its minutes as a failed replan", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    h.host.answer(done("Translated.", { proposal: "x" }));
+    await flush();
+    await h.clock.advanceMinutes(10);
+    expect(h.log.lines.some((line) => line.message === "replan failed")).toBe(true);
+    expect(h.host.lastOpen().request.role).toBe("planner");
+  });
+});
+
+describe("dispatcher: usage limit", () => {
+  it("interrupts the task, waits for the reset, then replans before going on", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    await h.clock.advanceMinutes(37);
+    const resetsAt = new Date(h.clock.now() + 2 * 60 * 60_000);
+    h.host.refuse(new SessionLimitError(resetsAt));
+    await flush();
+    let order = saved(file);
+    expect(order.tasks[0]?.status).toBe("interrupted");
+    expect(order.tasks[0]?.report).toMatchObject({ reason: "limit", minutes: 37 });
+    expect(order.replan).toEqual([{ reason: "limit", task: "ch1", text: "" }]);
+    expect(h.dispatcher.status().mode).toBe("waiting-limit");
+    expect(h.notifier.notices.map((notice) => notice.kind)).toEqual(["limit"]);
+    await h.clock.advanceMinutes(120);
+    expect(h.host.open_()).toHaveLength(0);
+    await h.clock.advanceMinutes(1);
+    const planner = h.host.lastOpen();
+    expect(planner.request.role).toBe("planner");
+    expect(planner.request.prompt).toContain(
+      "cut off by the usage limit of the account at minute 37",
+    );
+    h.host.answer({ state: {}, backlog: [backlogTask("ch1-rest"), backlogTask("ch2")] });
+    await flush();
+    order = saved(file);
+    expect(order.tasks.map((item) => `${item.id}:${item.status}`)).toEqual([
+      "ch1:interrupted",
+      "ch1-rest:running",
+      "ch2:pending",
+    ]);
+  });
+
+  it("keeps the owed replan when the limit cuts the planner, and runs it after the wait", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    h.host.answer(done("Translated.", { proposal: "add ch3" }));
+    await flush();
+    h.host.refuse(new SessionLimitError(undefined));
+    await flush();
+    expect(saved(file).replan).toHaveLength(1);
+    expect(h.dispatcher.status().mode).toBe("waiting-limit");
+    await h.clock.advanceMinutes(30);
+    expect(h.host.lastOpen().request.role).toBe("planner");
+    expect(h.host.lastOpen().request.prompt).toContain("add ch3");
+  });
+
+  it("warns the owner once when the weekly window is nearly used up", async () => {
+    const file = tempOrder(orderText(task("ch1")));
+    const h = await started(file);
+    const usage = h.host.lastOpen().request.onUsage;
+    usage?.({ type: "five_hour", utilization: 0.99 });
+    usage?.({ type: "seven_day", utilization: 0.91 });
+    usage?.({ type: "seven_day", utilization: 0.95 });
+    await flush();
+    expect(h.notifier.notices.map((notice) => notice.kind)).toEqual(["usage"]);
+    expect(h.notifier.notices[0]?.text).toContain("91 %");
+  });
+});
+
+describe("dispatcher: questions", () => {
+  it("blocks a task on questions, notifies the owner, and replans with the answers", async () => {
+    const file = tempOrder(
+      orderText(`${task("ch1")}${task("ch2", "    after: [ch1]\n")}${task("ch3")}`),
+    );
+    const h = await started(file);
+    h.host.answer({
+      outcome: "blocked",
+      summary: "Two names have two spellings.",
+      proposal: "",
+      questions: ["Use Colour or Color?"],
+    });
+    await flush();
+    expect(saved(file).questions?.map((q) => q.id)).toEqual(["q1"]);
+    expect(h.notifier.notices[0]?.kind).toBe("questions");
+    expect(h.notifier.notices[0]?.text).toContain("q1 [ch1]: Use Colour or Color?");
+    // ch3 does not depend on ch1 and goes on.
+    expect(h.host.lastOpen().request.prompt).toContain("Your task: ch3");
+    h.host.answer(done());
+    await flush();
+    expect(h.dispatcher.status().mode).toBe("waiting-owner");
+    h.dispatcher.answer("q1", "Colour");
+    await flush();
+    const planner = h.host.lastOpen();
+    expect(planner.request.role).toBe("planner");
+    expect(planner.request.prompt).toContain("Answer (owner): Colour");
+    h.host.answer({ state: {}, backlog: [backlogTask("ch1b"), backlogTask("ch2", ["ch1b"])] });
+    await flush();
+    h.host.answer(done());
+    await flush();
+    h.host.answer(done());
+    expect((await h.dispatcher.result).reason).toBe("done");
+    expect(statuses(file)).toEqual(["ch1:blocked", "ch3:done", "ch1b:done", "ch2:done"]);
+  });
+
+  it("lets the decider answer first and tells the owner only what it left", async () => {
+    const file = tempOrder(orderText(task("ch1"), `decider: ${BIG}\n`));
+    const h = await started(file);
+    h.host.answer({
+      outcome: "blocked",
+      summary: "Questions.",
+      proposal: "",
+      questions: ["Which spelling?", "Publish now?"],
+    });
+    await flush();
+    const decider = h.host.lastOpen();
+    expect(decider.request.role).toBe("decider");
+    expect(h.notifier.notices).toHaveLength(0);
+    h.host.answer({
+      answers: [
+        { id: "q1", answer: "British" },
+        { id: "q2", answer: "" },
+      ],
+    });
+    await flush();
+    const order = saved(file);
+    expect(order.questions?.[0]).toMatchObject({
+      answer: "British",
+      answeredBy: "decider big-model (medium) via test",
+    });
+    expect(order.questions?.[1]?.answer).toBeUndefined();
+    expect(h.notifier.notices.map((notice) => notice.text)).toEqual([
+      expect.stringContaining("q2 [ch1]: Publish now?"),
+    ]);
+  });
+
+  it("treats blocked without questions as failed", async () => {
+    const file = tempOrder(orderText(task("ch1")));
+    const h = await started(file);
+    h.host.answer({ outcome: "blocked", summary: "Stuck.", proposal: "" });
+    await flush();
+    expect(saved(file).tasks[0]?.status).toBe("failed");
+    expect(h.host.lastOpen().request.role).toBe("planner");
+  });
+});
+
+describe("dispatcher: pause, resume, stop", () => {
+  it("asks running workers to hand in, finishes the replan, then waits for resume", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    const worker = h.host.lastOpen();
+    h.dispatcher.pause(false);
+    expect(worker.sent).toEqual([{ text: PAUSE_TEXT, priority: "now" }]);
+    expect(h.dispatcher.status().mode).toBe("pausing");
+    h.host.answer({
+      outcome: "failed",
+      summary: "Half done.",
+      proposal: "Finish ch1 from page 9.",
+    });
+    await flush();
+    expect(h.host.lastOpen().request.role).toBe("planner");
+    h.host.answer({ state: {}, backlog: [backlogTask("ch1-rest"), backlogTask("ch2")] });
+    await flush();
+    expect(h.dispatcher.status().mode).toBe("paused");
+    expect(h.host.open_()).toHaveLength(0);
+    h.dispatcher.resume();
+    await flush();
+    expect(h.host.lastOpen().request.prompt).toContain("Your task: ch1-rest");
+  });
+
+  it("lets workers finish on their own with drain", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    const worker = h.host.lastOpen();
+    h.dispatcher.pause(true);
+    expect(worker.sent).toEqual([]);
+    h.host.answer(done());
+    await flush();
+    expect(h.dispatcher.status().mode).toBe("paused");
+    expect(statuses(file)).toEqual(["ch1:done", "ch2:pending"]);
+  });
+
+  it("stops at once: the running task is interrupted and the next start begins with the planner", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    await h.clock.advanceMinutes(12);
+    h.dispatcher.stop();
+    expect(await h.dispatcher.result).toEqual({ reason: "stopped" });
+    expect(h.host.last().closed).toBe(true);
+    const order = saved(file);
+    expect(order.tasks[0]?.report).toMatchObject({ reason: "stop", minutes: 12 });
+    expect(order.replan).toEqual([{ reason: "interrupted", task: "ch1", text: "" }]);
+    expect(h.notifier.notices).toHaveLength(0);
+    const again = await started(file);
+    expect(again.host.lastOpen().request.role).toBe("planner");
+    expect(again.host.lastOpen().request.prompt).toContain("was interrupted at minute 12 (stop)");
+  });
+});
+
+describe("dispatcher: one file, one process", () => {
+  it("interrupts a task left running by a dead process and replans first", async () => {
+    const file = tempOrder(orderText(`${task("ch1", "    status: running\n")}${task("ch2")}`));
+    const h = await started(file);
+    expect(saved(file).tasks[0]?.status).toBe("interrupted");
+    expect(h.host.lastOpen().request.role).toBe("planner");
+  });
+
+  it("refuses a second dispatcher while the first holds the lock", async () => {
+    const file = tempOrder(orderText(task("ch1")));
+    await started(file);
+    expect(() => {
+      harness(file).dispatcher.start();
+    }).toThrow(/already run by process/);
+  });
+
+  it("takes over a lock whose process is gone", async () => {
+    const file = tempOrder(orderText(task("ch1")));
+    const paths = orderPaths(file);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.lock, "999999999\n");
+    const h = await started(file);
+    expect(h.host.sessions).toHaveLength(1);
+  });
+
+  it("stops without overwriting a file someone else changed", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    const edited = readFileSync(file, "utf8").replace("Fictional book", "Edited by hand");
+    writeFileSync(file, edited);
+    h.host.answer(done());
+    const result = await h.dispatcher.result;
+    expect(result.reason).toBe("conflict");
+    expect(readFileSync(file, "utf8")).toBe(edited);
+    expect(existsSync(join(orderPaths(file).runDir, "order.conflict.yaml"))).toBe(true);
+  });
+
+  it("refuses an order whose model plugin it does not have", () => {
+    const file = tempOrder(orderText(task("ch1")).replace(SMALL, "{ plugin: api, name: x }"));
+    expect(() => {
+      harness(file).dispatcher.start();
+    }).toThrow(/no model plugin api/);
+    expect(existsSync(orderPaths(file).lock)).toBe(false);
+  });
+});
+
+describe("dispatcher: pool", () => {
+  it("runs up to the pool size at once and keeps after", async () => {
+    const file = tempOrder(
+      orderText(
+        `${task("a")}${task("b")}${task("c", "    after: [a]\n")}${task("d")}`,
+        "settings:\n  pool: 2\n",
+      ),
+    );
+    const h = await started(file);
+    expect(statuses(file)).toEqual(["a:running", "b:running", "c:pending", "d:pending"]);
+    expect(h.host.sessions[1]?.request.prompt).toContain("Up to 2 workers run at the same time");
+    expect(h.host.sessions[1]?.request.prompt).toContain("Running now: a (Translate a)");
+    h.host.answer(done(), h.host.sessions[1]);
+    await flush();
+    expect(statuses(file)).toEqual(["a:running", "b:done", "c:pending", "d:running"]);
+    h.host.answer(done(), h.host.sessions[0]);
+    await flush();
+    expect(statuses(file)).toEqual(["a:done", "b:done", "c:running", "d:running"]);
+  });
+
+  it("merges state patches of parallel workers", async () => {
+    const file = tempOrder(orderText(`${task("a")}${task("b")}`, "settings:\n  pool: 2\n"));
+    const h = await started(file, { pool: 2 });
+    h.host.answer(done("a", { statePatch: { a: 1 } }), h.host.sessions[0]);
+    h.host.answer(done("b", { statePatch: { b: 2 } }), h.host.sessions[1]);
+    await h.dispatcher.result;
+    expect(saved(file).state).toEqual({ a: 1, b: 2 });
+  });
+
+  it("starts no task while the planner works, and applies its state as a change", async () => {
+    const file = tempOrder(
+      orderText(`${task("a")}${task("b")}${task("c")}`, "settings:\n  pool: 2\n"),
+    );
+    const h = await started(file);
+    h.host.answer(
+      done("a", { statePatch: { seen: ["a"] }, proposal: "rename c" }),
+      h.host.sessions[0],
+    );
+    await flush();
+    expect(h.host.lastOpen().request.role).toBe("planner");
+    expect(statuses(file)).toEqual(["a:done", "b:running", "c:pending"]);
+    // b finishes while the planner works.
+    h.host.answer(done("b", { statePatch: { b: true } }), h.host.sessions[1]);
+    await flush();
+    expect(h.host.open_().map((session) => session.request.role)).toEqual(["planner"]);
+    h.host.answer({ state: { seen: ["a"], planned: true }, backlog: [backlogTask("c2")] });
+    await flush();
+    const order = saved(file);
+    expect(order.state).toEqual({ seen: ["a"], b: true, planned: true });
+    expect(statuses(file)).toEqual(["a:done", "b:done", "c2:running"]);
+  });
+});
+
+describe("dispatcher: status", () => {
+  it("reports mode, counts, running tasks and totals", async () => {
+    const file = tempOrder(
+      orderText(
+        `${task("ch1", "    status: done\n    report: { summary: s, proposal: '', minutes: 20, costUsd: 0.5 }\n")}${task("ch2")}${task("ch3")}`,
+      ),
+    );
+    const h = await started(file);
+    await h.clock.advanceMinutes(7);
+    const status = h.dispatcher.status();
+    expect(status.mode).toBe("running");
+    expect(status.counts).toMatchObject({ done: 1, running: 1, pending: 1 });
+    expect(status.running).toEqual([{ id: "ch2", title: "Translate ch2", minutes: 7 }]);
+    expect(status.totals).toEqual({ minutes: 20, costUsd: 0.5, sessions: 1 });
+    h.dispatcher.pause(true);
+    await h.clock.advanceMinutes(3);
+    const pausing = h.dispatcher.status();
+    expect(pausing.mode).toBe("pausing");
+    expect(Date.parse(pausing.since ?? "")).toBe(h.clock.now() - 3 * 60_000);
+  });
+
+  it("answers control requests", async () => {
+    const file = tempOrder(orderText(task("ch1")));
+    const h = await started(file);
+    expect(h.dispatcher.handle({ cmd: "answer", id: "q1", text: "x" })).toEqual({
+      ok: false,
+      error: "no question q1",
+    });
+    const reply = h.dispatcher.handle({ cmd: "pause", drain: true });
+    expect(reply.ok && reply.status.mode).toBe("pausing");
+  });
+});
+
+describe("dispatcher: sessions", () => {
+  it("passes the disallowed tools and writes a transcript per session", async () => {
+    const file = tempOrder(orderText(task("ch1"), "settings:\n  disallowedTools: [WebSearch]\n"));
+    const h = await started(file);
+    const request = h.host.lastOpen().request;
+    expect(request.disallowedTools).toEqual(["WebSearch"]);
+    request.transcript("assistant text: key sk-ant-abc123 here");
+    const transcript = join(orderPaths(file).sessions, "0001-worker-ch1.log");
+    const text = readFileSync(transcript, "utf8");
+    expect(text).toContain("prompt | You are a worker of Ordo");
+    expect(text).toContain("key sk-ant-… here");
+    expect(text).not.toContain("abc123");
+  });
+});
