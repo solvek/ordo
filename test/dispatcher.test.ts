@@ -63,6 +63,17 @@ describe("dispatcher: the loop", () => {
     expect(existsSync(orderPaths(file).lock)).toBe(false);
   });
 
+  it("stores a note without a replan and starts the next worker", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    h.host.answer(done("Chapter 1.", { note: "glossary: Colour", proposal: "" }));
+    await flush();
+    expect(saved(file).tasks[0]?.report?.note).toBe("glossary: Colour");
+    expect(saved(file).replan).toBeUndefined();
+    expect(statuses(file)).toEqual(["ch1:done", "ch2:running"]);
+    expect(h.host.lastOpen().request.role).toBe("worker");
+  });
+
   it("asks the planner to replace the backlog when a worker proposes a change", async () => {
     const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
     const h = await started(file);
@@ -77,8 +88,10 @@ describe("dispatcher: the loop", () => {
       { reason: "proposal", task: "ch1", text: "Split ch2 in two." },
     ]);
     h.host.answer({
-      state: { split: true },
-      backlog: [backlogTask("ch2a"), backlogTask("ch2b", ["ch2a"])],
+      statePatch: { split: true },
+      remove: ["ch2"],
+      upsert: [backlogTask("ch2a"), backlogTask("ch2b", ["ch2a"])],
+      order: ["ch2a", "ch2b"],
     });
     await flush();
     expect(statuses(file)).toEqual(["ch1:done", "ch2a:running", "ch2b:pending"]);
@@ -97,7 +110,7 @@ describe("dispatcher: the loop", () => {
     await flush();
     expect(h.host.lastOpen().request.role).toBe("planner");
     expect(h.host.lastOpen().request.prompt).toContain("Task ch1 (Translate ch1) failed");
-    h.host.answer({ state: {}, backlog: [backlogTask("ch2")] });
+    h.host.answer({});
     await flush();
     h.host.answerText("I translated it, honestly.");
     await flush();
@@ -121,13 +134,21 @@ describe("dispatcher: the loop", () => {
     const h = await started(file);
     h.host.answer(done("Translated.", { proposal: "redo ch1" }));
     await flush();
-    h.host.answer({ state: {}, backlog: [backlogTask("ch1")] });
+    h.host.answer({
+      remove: ["ch2"],
+      upsert: [backlogTask("ch1")],
+      order: ["ch1"],
+    });
     await flush();
     expect(h.host.lastOpen().request.role).toBe("planner");
-    h.host.answer({ state: {}, backlog: [backlogTask("ch1")] });
+    h.host.answer({
+      remove: ["ch2"],
+      upsert: [backlogTask("ch1")],
+      order: ["ch1"],
+    });
     const result = await h.dispatcher.result;
     expect(result.reason).toBe("replan-failed");
-    expect(result.detail).toMatch(/already ran/);
+    expect(result.detail).toMatch(/is not pending/);
     expect(statuses(file)).toEqual(["ch1:done", "ch2:pending"]);
     expect(saved(file).replan).toHaveLength(1);
     expect(h.notifier.notices.map((notice) => notice.kind)).toEqual(["error"]);
@@ -139,9 +160,9 @@ describe("dispatcher: the loop", () => {
     h.host.answer(done("Translated.", { proposal: "use another plugin" }));
     await flush();
     const bad = { ...backlogTask("ch2"), model: { plugin: "nowhere", name: "x" } };
-    h.host.answer({ state: {}, backlog: [bad] });
+    h.host.answer({ upsert: [bad] });
     await flush();
-    h.host.answer({ state: {}, backlog: [bad] });
+    h.host.answer({ upsert: [bad] });
     const result = await h.dispatcher.result;
     expect(result.detail).toMatch(/no model plugin nowhere/);
     expect(statuses(file)).toEqual(["ch1:done", "ch2:pending"]);
@@ -152,7 +173,7 @@ describe("dispatcher: the loop", () => {
     const h = await started(file);
     h.host.answer({ outcome: "failed", summary: "No.", proposal: "" });
     await flush();
-    h.host.answer({ state: {}, backlog: [backlogTask("ch2", ["ch1"])] });
+    h.host.answer({});
     const result = await h.dispatcher.result;
     expect(result.reason).toBe("stuck");
     expect(result.detail).toContain("ch2");
@@ -232,7 +253,10 @@ describe("dispatcher: usage limit", () => {
     expect(planner.request.prompt).toContain(
       "cut off by the usage limit of the account at minute 37",
     );
-    h.host.answer({ state: {}, backlog: [backlogTask("ch1-rest"), backlogTask("ch2")] });
+    h.host.answer({
+      upsert: [backlogTask("ch1-rest")],
+      order: ["ch1-rest", "ch2"],
+    });
     await flush();
     order = saved(file);
     expect(order.tasks.map((item) => `${item.id}:${item.status}`)).toEqual([
@@ -295,7 +319,10 @@ describe("dispatcher: questions", () => {
     const planner = h.host.lastOpen();
     expect(planner.request.role).toBe("planner");
     expect(planner.request.prompt).toContain("Answer (owner): Colour");
-    h.host.answer({ state: {}, backlog: [backlogTask("ch1b"), backlogTask("ch2", ["ch1b"])] });
+    h.host.answer({
+      upsert: [backlogTask("ch1b"), backlogTask("ch2", ["ch1b"])],
+      order: ["ch1b", "ch2"],
+    });
     await flush();
     h.host.answer(done());
     await flush();
@@ -360,7 +387,10 @@ describe("dispatcher: pause, resume, stop", () => {
     });
     await flush();
     expect(h.host.lastOpen().request.role).toBe("planner");
-    h.host.answer({ state: {}, backlog: [backlogTask("ch1-rest"), backlogTask("ch2")] });
+    h.host.answer({
+      upsert: [backlogTask("ch1-rest")],
+      order: ["ch1-rest", "ch2"],
+    });
     await flush();
     expect(h.dispatcher.status().mode).toBe("paused");
     expect(h.host.open_()).toHaveLength(0);
@@ -489,7 +519,12 @@ describe("dispatcher: pool", () => {
     h.host.answer(done("b", { statePatch: { b: true } }), h.host.sessions[1]);
     await flush();
     expect(h.host.open_().map((session) => session.request.role)).toEqual(["planner"]);
-    h.host.answer({ state: { seen: ["a"], planned: true }, backlog: [backlogTask("c2")] });
+    h.host.answer({
+      statePatch: { planned: true },
+      remove: ["c"],
+      upsert: [backlogTask("c2")],
+      order: ["c2"],
+    });
     await flush();
     const order = saved(file);
     expect(order.state).toEqual({ seen: ["a"], b: true, planned: true });

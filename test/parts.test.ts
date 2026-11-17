@@ -31,6 +31,7 @@ describe("workerPrompt", () => {
     expect(text).toContain("- id: ch2");
     expect(text).toContain("after: [ch1]");
     expect(text).toContain("statePatch");
+    expect(text).toContain("note");
     expect(text).toContain("nothing may keep running in the background");
     expect(text).not.toContain("Up to");
   });
@@ -51,6 +52,7 @@ describe("workerPrompt", () => {
     expect(text).toContain("You run as big-model (medium) via test");
     expect(text).toContain("- small-model via test");
     expect(text).toContain("Up to 3 tasks run at the same time");
+    expect(text).toContain("upsert");
     expect(text).toContain("summary: Done well.");
   });
 });

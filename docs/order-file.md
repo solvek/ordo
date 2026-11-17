@@ -73,7 +73,7 @@ Statuses:
 | `blocked`     | The worker asked the owner questions. Once they are all answered, a replan follows.                                                                                                            |
 | `interrupted` | Closed at `minutes.stop`, stopped by the owner, cut by the usage limit, or left running by a dead dispatcher. `report.reason` says which (`time`, `stop`, `limit`, `crash`). A replan follows. |
 
-`report` holds `summary`, `proposal`, and when known `reason`, `minutes`, `turns`, `costUsd` (the API-equivalent cost the session reports).
+`report` holds `summary`, `proposal`, an optional `note`, and when known `reason`, `minutes`, `turns`, `costUsd` (the API-equivalent cost the session reports).
 
 ## The worker's reply
 
@@ -81,19 +81,20 @@ Statuses:
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `outcome`    | `done`, `failed` or `blocked`.                                                                                                            |
 | `summary`    | A few sentences on what was done.                                                                                                         |
-| `proposal`   | What to change in the backlog; empty when nothing. Non-empty calls the planner even after `done`.                                         |
+| `proposal`   | What to add, drop or split in the backlog. Empty when the backlog stays. A non-empty proposal calls the planner even after `done`.        |
+| `note`       | A note for the owner or a later task when the backlog stays. Whitespace-only is the same as omitted. A note does not call the planner.    |
 | `questions`  | With `blocked`: questions to the owner. They are added to the order as `q1`, `q2`, …                                                      |
 | `statePatch` | A JSON Merge Patch over `state`: changed top-level keys with their full new value, `null` removes a key. Parallel workers' patches merge. |
 
 ## Fields the dispatcher keeps
 
-- `replan`: replan reasons not yet handled (`proposal`, `failed`, `interrupted`, `limit`, `answers`), each with its `task` and `text`. Written before the planner starts, removed when its backlog is saved, so a dispatcher stopped in between replans first on its next start.
+- `replan`: replan reasons not yet handled (`proposal`, `failed`, `interrupted`, `limit`, `answers`), each with its `task` and `text`. Written before the planner starts, removed when its patch is saved, so a dispatcher stopped in between replans first on its next start.
 - `questions`: `id`, `task`, `text`, `askedAt`, and once answered `answer`, `answeredBy` (`owner` or the decider's model), `answeredAt`.
 
 ## Rules the dispatcher keeps
 
-- The planner returns the whole state and the whole backlog. The backlog replaces every `pending` task; tasks that ran stay as they are, in their order. A state change of the planner applies over the current state, so state written by workers that finished meanwhile is kept.
+- The planner returns a patch, not the whole state and not the whole backlog. `remove` drops pending ids. `upsert` replaces a pending task in place or adds a new one. `order`, when present, is exactly the pending ids after the edit and becomes their order; it is required when a task is added or removed, and omitted when tasks are only replaced in place or nothing changes. Tasks that are not pending stay, in file order, and their ids are not reused. `statePatch` is a JSON Merge Patch on the state at the moment the reply is applied, so a key a worker wrote while the planner ran stays unless the patch names that key. Omit it to leave the state alone. The replan items the planner was shown are dropped; items queued while it ran stay.
 - While the planner runs, no new task starts.
-- A planner that fails twice in a row (timeout, unreadable reply, invalid backlog) stops the dispatcher once the running tasks are done (`replan-failed`). The owed replan stays in the file.
+- A planner that fails twice in a row (timeout, unreadable reply, invalid patch) stops the dispatcher once the running tasks are done (`replan-failed`). The owed replan stays in the file.
 - When pending tasks wait for tasks that will never be done and no question is open, the dispatcher stops as `stuck`.
 - If the order file changes on disk while the dispatcher runs, it does not overwrite it: it stops (`conflict`) and leaves its own version in `<order>.ordo/order.conflict.yaml`. Change an order only through `ordo answer`, or after `ordo stop`.

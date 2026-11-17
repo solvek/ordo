@@ -1,5 +1,5 @@
 // The order file: context, models of the planner and the decider, settings, state, tasks and the owner's questions.
-// While a dispatcher runs it is the only writer of the file; the planner replaces the backlog.
+// While a dispatcher runs it is the only writer of the file; the planner patches the backlog.
 import { createHash } from "node:crypto";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
@@ -62,6 +62,8 @@ export type OrderState = z.infer<typeof State>;
 const Report = z.strictObject({
   summary: z.string(),
   proposal: z.string(),
+  /** A note that does not change the backlog. Empty or absent calls nothing. */
+  note: z.string().optional(),
   reason: z.enum(INTERRUPT_REASONS).optional(),
   minutes: z.number().optional(),
   turns: z.number().int().optional(),
@@ -122,7 +124,13 @@ export const WorkerReply = z.strictObject({
   proposal: z
     .string()
     .describe(
-      "What to change in the backlog. Empty when it stays as it is. A proposal, not a new list of tasks.",
+      "What to add, drop or split in the backlog. Empty when the backlog stays. A non-empty proposal calls the planner. Notes for a later task go in note, not here.",
+    ),
+  note: z
+    .string()
+    .optional()
+    .describe(
+      "A note for the owner or a later task that does not change the backlog. Omit when there is nothing. A note does not call the planner.",
     ),
   questions: z
     .array(z.string().min(1))
@@ -149,10 +157,33 @@ const TaskDraft = z.strictObject({
 });
 export type TaskDraft = z.infer<typeof TaskDraft>;
 
-/** What the planner returns: the whole state and the whole new backlog. */
+/**
+ * What the planner returns: a patch. Tasks and state keys it does not mention stay.
+ * Sending the whole backlog back would spend the reply on copying what already stands.
+ */
 export const PlannerReply = z.strictObject({
-  state: State.describe("The whole new state."),
-  backlog: z.array(TaskDraft).describe("Every task not started yet, in order of priority."),
+  statePatch: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "Only the top-level state keys that changed, each with its full new value; null removes a key. Omit when the state did not change.",
+    ),
+  remove: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("Ids of pending tasks to drop. Omit when none."),
+  upsert: z
+    .array(TaskDraft)
+    .optional()
+    .describe(
+      "Tasks to add or replace. An id that is already pending is replaced; a new id is added. Omit tasks that stay as they are.",
+    ),
+  order: z
+    .array(z.string().min(1))
+    .optional()
+    .describe(
+      "Every pending task id after the change, in run order. Required when tasks are added, removed or reordered. Omit when tasks are only replaced in place or nothing changes.",
+    ),
 });
 export type PlannerReply = z.infer<typeof PlannerReply>;
 
@@ -351,33 +382,70 @@ export function withReplan(order: Order, item: ReplanItem): Order {
   return { ...order, replan: [...(order.replan ?? []), item] };
 }
 
+function taskFromDraft(draft: TaskDraft): Task {
+  const task: Task = {
+    id: draft.id,
+    title: draft.title,
+    model: draft.model,
+    prompt: draft.prompt,
+    status: "pending",
+  };
+  if (draft.after !== undefined && draft.after.length > 0) task.after = draft.after;
+  return task;
+}
+
 /**
- * Replace every pending task with `reply.backlog` and set the state. Tasks that ran or run
- * stay, in their order, and their ids cannot reappear. The first `consumed` replan items are
- * settled; items queued while the planner worked stay for the next replan.
+ * Apply a planner patch. Tasks that ran or are running stay, in their order, and their ids
+ * cannot reappear. Pending tasks that the patch does not mention stay too. The first
+ * `consumed` replan items are settled; items queued while the planner worked stay.
  */
-export function applyBacklog(order: Order, reply: PlannerReply, consumed: number): Order {
+export function applyPlan(order: Order, reply: PlannerReply, consumed: number): Order {
   const kept = order.tasks.filter((task) => task.status !== "pending");
   const keptIds = new Set(kept.map((task) => task.id));
-  const seen = new Set<string>();
-  const backlog: Task[] = [];
-  for (const draft of reply.backlog) {
-    if (keptIds.has(draft.id))
-      throw new OrderError(`backlog task ${draft.id} repeats a task that already ran`);
-    if (seen.has(draft.id)) throw new OrderError(`backlog repeats task id ${draft.id}`);
-    seen.add(draft.id);
-    const task: Task = {
-      id: draft.id,
-      title: draft.title,
-      model: draft.model,
-      prompt: draft.prompt,
-      status: "pending",
-    };
-    if (draft.after !== undefined && draft.after.length > 0) task.after = draft.after;
-    backlog.push(task);
+  const remove = new Set(reply.remove ?? []);
+  for (const id of remove) {
+    if (
+      keptIds.has(id) ||
+      !order.tasks.some((task) => task.id === id && task.status === "pending")
+    ) {
+      throw new OrderError(`cannot remove task ${id}: it is not pending`);
+    }
   }
+  let pending = order.tasks.filter((task) => task.status === "pending" && !remove.has(task.id));
+  const seen = new Set<string>();
+  const added: Task[] = [];
+  for (const draft of reply.upsert ?? []) {
+    if (seen.has(draft.id)) throw new OrderError(`upsert repeats task id ${draft.id}`);
+    seen.add(draft.id);
+    if (keptIds.has(draft.id)) {
+      throw new OrderError(`upsert task ${draft.id} repeats a task that is not pending`);
+    }
+    const task = taskFromDraft(draft);
+    const index = pending.findIndex((item) => item.id === draft.id);
+    if (index >= 0) pending[index] = task;
+    else added.push(task);
+  }
+  if (reply.order !== undefined) {
+    const want = reply.order;
+    if (new Set(want).size !== want.length) throw new OrderError("order repeats an id");
+    const byId = new Map([...pending, ...added].map((task) => [task.id, task]));
+    if (want.length !== byId.size || want.some((id) => !byId.has(id))) {
+      throw new OrderError(
+        `order must list exactly the pending tasks: ${[...byId.keys()].join(", ")}`,
+      );
+    }
+    pending = want.map((id) => {
+      const task = byId.get(id);
+      if (task === undefined) throw new OrderError(`order names missing task ${id}`);
+      return task;
+    });
+  } else if (remove.size > 0 || added.length > 0) {
+    throw new OrderError("order is required when tasks are added or removed");
+  }
+  const state =
+    reply.statePatch === undefined ? order.state : patchState(order.state, reply.statePatch);
   const rest = (order.replan ?? []).slice(consumed);
-  const next: Order = { ...order, state: reply.state, tasks: [...kept, ...backlog] };
+  const next: Order = { ...order, state, tasks: [...kept, ...pending] };
   if (rest.length > 0) next.replan = rest;
   else delete next.replan;
   const problems = orderProblems(next);

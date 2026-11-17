@@ -99,7 +99,8 @@ export function workerPrompt(input: WorkerPromptInput): string {
     "Report:",
     "- outcome: done when the task is complete; failed when it cannot be completed as given (say why, and put what is left in proposal); blocked when it cannot go on without the owner's answers (ask them in questions).",
     "- summary: a few sentences on what was done.",
-    "- proposal: what to change in the backlog. Empty when it stays as it is. A proposal, not a new list of tasks.",
+    "- proposal: what to add, drop or split in the backlog. Empty when the backlog stays. A non-empty proposal calls the planner, so do not put notes here.",
+    "- note: something the owner or a later task should see when the backlog stays as it is. Omit it when there is nothing. A note does not call the planner. Later sessions do not read this report, so also save the note where the order context says.",
     "- questions: only with blocked. Each question self-contained: the owner reads it on a phone.",
     "- statePatch: only the top-level state keys that changed, each with its full new value; null removes a key. Omit it when the state did not change.",
     "Write summary, proposal and questions in the language of the order context.",
@@ -157,13 +158,21 @@ export function plannerPrompt(input: PlannerPromptInput): string {
       : ran
           .map((task) => {
             const report = task.report;
-            return `- ${task.id} ${task.status}: ${task.title}\n  summary: ${report?.summary ?? ""}\n  proposal: ${report?.proposal ?? ""}`;
+            const note =
+              report?.note === undefined || report.note.trim() === ""
+                ? ""
+                : `\n  note: ${report.note}`;
+            return `- ${task.id} ${task.status}: ${task.title}\n  summary: ${report?.summary ?? ""}\n  proposal: ${report?.proposal ?? ""}${note}`;
           })
           .join("\n");
   const lines = [
-    "You are the planner of a work order run by Ordo. You rewrite the backlog: the tasks not started yet.",
+    "You are the planner of a work order run by Ordo. You patch the backlog: the tasks not started yet.",
     "Do not edit the order file or any other file. You may read files to see what workers left. The dispatcher writes your reply into the order.",
-    "Return the whole state (as it is, when it does not change) and the whole backlog: every task not started yet, also those that stay as they are.",
+    "Return only the change. Tasks and state keys you do not mention stay as they are.",
+    "- statePatch: only the top-level state keys that change, each with its full new value; null removes a key. Omit it when the state stays.",
+    "- remove: ids of pending tasks to drop. Omit it when you drop none.",
+    "- upsert: tasks to add or replace. An id that is already pending is replaced; send the whole task. A new id is added. Do not send a task that stays as it is.",
+    "- order: every pending task id after your change, in the order they should run. Required when you add, remove or reorder. Omit it when you only replace tasks in place or change nothing.",
     "Tasks that ran or are running stay as they are. Do not reuse their ids.",
     `A task must fit in one session of about ${String(minutes.wrap)} minutes. Split larger work.`,
     "Use after for every real dependency. A task without after may start as soon as a worker is free.",

@@ -3,7 +3,7 @@ import { limitWatch } from "../src/limit.ts";
 import {
   type Order,
   answerQuestion,
-  applyBacklog,
+  applyPlan,
   formatOrder,
   mergePatch,
   minutesOf,
@@ -161,7 +161,7 @@ describe("state patches", () => {
   });
 });
 
-describe("applyBacklog", () => {
+describe("applyPlan", () => {
   function base(): Order {
     return parseOrder(
       orderText(
@@ -173,12 +173,15 @@ describe("applyBacklog", () => {
     );
   }
 
-  it("replaces only pending tasks and settles the replan items it was shown", () => {
-    const next = applyBacklog(
+  const draft = { title: "x", model: { plugin: "test", name: "m" }, prompt: "x" };
+
+  it("replaces pending tasks and settles the replan item it was shown", () => {
+    const next = applyPlan(
       base(),
       {
-        state: { chapter: 2 },
-        backlog: [
+        statePatch: { chapter: 2 },
+        remove: ["ch3"],
+        upsert: [
           {
             id: "ch2b",
             title: "Second chapter, again",
@@ -187,6 +190,7 @@ describe("applyBacklog", () => {
             after: ["done-one"],
           },
         ],
+        order: ["ch2b"],
       },
       1,
     );
@@ -199,14 +203,51 @@ describe("applyBacklog", () => {
     expect(next.replan).toEqual([{ reason: "failed", task: "ch2", text: "" }]);
   });
 
-  it("rejects a backlog id that already ran and a backlog that names a missing task", () => {
-    const draft = { title: "x", model: { plugin: "test", name: "m" }, prompt: "x" };
+  it("rejects an upsert id that is not pending", () => {
+    expect(() => applyPlan(base(), { upsert: [{ id: "done-one", ...draft }] }, 2)).toThrow(
+      /is not pending/,
+    );
+  });
+
+  it("rejects an after that names a missing task", () => {
     expect(() =>
-      applyBacklog(base(), { state: {}, backlog: [{ id: "done-one", ...draft }] }, 2),
-    ).toThrow(/already ran/);
-    expect(() =>
-      applyBacklog(base(), { state: {}, backlog: [{ id: "n", after: ["gone"], ...draft }] }, 2),
+      applyPlan(
+        base(),
+        { upsert: [{ id: "n", after: ["gone"], ...draft }], order: ["ch3", "n"] },
+        2,
+      ),
     ).toThrow(/no task gone/);
+  });
+
+  it("rejects an add or a remove that omits order", () => {
+    expect(() => applyPlan(base(), { upsert: [{ id: "n", ...draft }] }, 2)).toThrow(
+      /order is required/,
+    );
+    expect(() => applyPlan(base(), { remove: ["ch3"] }, 2)).toThrow(/order is required/);
+  });
+
+  it("keeps position when an in-place upsert omits order", () => {
+    const order = parseOrder(orderText(`${task("ch2")}${task("ch3")}${task("ch4")}`));
+    const next = applyPlan(
+      order,
+      {
+        upsert: [
+          {
+            id: "ch3",
+            title: "Middle, revised",
+            model: { plugin: "test", name: "small-model" },
+            prompt: "Revised.",
+          },
+        ],
+      },
+      0,
+    );
+    expect(next.tasks.map((item) => `${item.id}:${item.title}`)).toEqual([
+      "ch2:Translate ch2",
+      "ch3:Middle, revised",
+      "ch4:Translate ch4",
+    ]);
+    expect(next.tasks.every((item) => item.status === "pending")).toBe(true);
   });
 });
 

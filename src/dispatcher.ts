@@ -14,14 +14,13 @@ import {
   type Minutes,
   type Order,
   OrderError,
-  type OrderState,
   PlannerReply,
   type Task,
   type TaskReport,
   WorkerReply,
   addQuestions,
   answerQuestion,
-  applyBacklog,
+  applyPlan,
   formatOrder,
   minutesOf,
   modelText,
@@ -33,7 +32,6 @@ import {
   recoverOrder,
   replySchema,
   runnableTasks,
-  stateDiff,
   textHash,
   updateTask,
   withReplan,
@@ -145,8 +143,6 @@ interface MetaRun {
   settled: boolean;
   /** Planner: how many replan items it was shown. */
   consumed: number;
-  /** Planner: the state it was shown; its reply applies as a change to it. */
-  stateBefore: OrderState;
   /** Decider: the questions it was shown. */
   questionIds: string[];
 }
@@ -563,6 +559,8 @@ export class Dispatcher {
           this.order = { ...this.order, state: patchState(this.order.state, reply.statePatch) };
         }
         report = { summary: reply.summary, proposal: reply.proposal, ...extra };
+        const note = reply.note?.trim() ?? "";
+        if (note !== "") report.note = note;
         const questions = reply.questions ?? [];
         if (reply.outcome === "blocked" && questions.length > 0) {
           status = "blocked";
@@ -614,7 +612,6 @@ export class Dispatcher {
     );
     this.startMeta("planner", session, {
       consumed: items.length,
-      stateBefore: this.order.state,
       questionIds: [],
     });
   }
@@ -635,13 +632,13 @@ export class Dispatcher {
         replySchema(DeciderReply),
       ),
     );
-    this.startMeta("decider", session, { consumed: 0, stateBefore: {}, questionIds });
+    this.startMeta("decider", session, { consumed: 0, questionIds });
   }
 
   private startMeta(
     kind: MetaRun["kind"],
     session: RunningSession,
-    data: Pick<MetaRun, "consumed" | "stateBefore" | "questionIds">,
+    data: Pick<MetaRun, "consumed" | "questionIds">,
   ): void {
     const meta: MetaRun = {
       kind,
@@ -702,10 +699,7 @@ export class Dispatcher {
       if (reply === null) problem = unread(end.answer.text);
       else {
         try {
-          // Workers that finished while the planner worked changed the state too: apply the
-          // planner's change over the current state instead of replacing it.
-          const state = patchState(this.order.state, stateDiff(meta.stateBefore, reply.state));
-          const next = applyBacklog(this.order, { state, backlog: reply.backlog }, meta.consumed);
+          const next = applyPlan(this.order, reply, meta.consumed);
           const before = this.order;
           this.order = next;
           const missing = this.missingPlugins();
@@ -715,7 +709,7 @@ export class Dispatcher {
           }
           this.replanFailures = 0;
           this.save();
-          this.log.info("backlog replaced", { pending: pendingTasks(this.order).length });
+          this.log.info("backlog patched", { pending: pendingTasks(this.order).length });
           return;
         } catch (error: unknown) {
           if (!(error instanceof OrderError)) throw error;
