@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { sessionEnv } from "../src/claude.ts";
-import { sendControl, serveControl } from "../src/control.ts";
+import { sendControl, serveControl, statusFromReply } from "../src/control.ts";
 import { prettyLine } from "../src/logger.ts";
 import { type FetchLike, commandPlugin, createNotifiers, telegramPlugin } from "../src/notify.ts";
 import { DEFAULT_MINUTES, parseOrder } from "../src/order.ts";
@@ -150,6 +150,22 @@ describe("notifiers", () => {
     await expect(
       notifier.send({ kind: "error", order: "Book", text: "x".repeat(1024 * 1024) }),
     ).rejects.toThrow(/exited 3/);
+  });
+});
+
+describe("status of an order", () => {
+  it("shows the live dispatcher status, not the file-only one, when the socket answers", () => {
+    const order = parseOrder(orderText(task("ch1")));
+    const live = { ...fileStatus(order, "f"), mode: "running" as const, pid: 4242, pool: 1 };
+    const report = statusFromReply(order, "f", { ok: true, status: live });
+    expect(report.mode).toBe("running");
+    expect(report.pid).toBe(4242);
+  });
+
+  it("falls back to the file status when no dispatcher answers", () => {
+    const order = parseOrder(orderText(task("ch1")));
+    expect(statusFromReply(order, "f", null).mode).toBe("not-running");
+    expect(statusFromReply(order, "f", { ok: false, error: "busy" }).mode).toBe("not-running");
   });
 });
 

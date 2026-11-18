@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { claudeHost } from "./claude.ts";
 import { openaiEnvProblems, openaiHost } from "./openai.ts";
-import { registrations, register, sendControl, serveControl } from "./control.ts";
+import { registrations, register, sendControl, serveControl, statusFromReply } from "./control.ts";
 import { Dispatcher, type RunResult } from "./dispatcher.ts";
 import { acquireLock, lockHolder, orderPaths, readOrderText, writeAtomic } from "./files.ts";
 import { createLogger, parseLevel, prettyLine } from "./logger.ts";
@@ -313,7 +313,7 @@ function hostsOf(useApiKey: boolean): Record<string, SessionHost> {
   };
 }
 
-function check(file: string): number {
+async function check(file: string): Promise<number> {
   const order = parseOrder(readOrderText(file));
   const problems: string[] = [];
   const plugins = orderPlugins(order);
@@ -328,7 +328,10 @@ function check(file: string): number {
   } catch (error: unknown) {
     problems.push(error instanceof Error ? error.message : "notifiers are not valid");
   }
-  process.stdout.write(`${formatStatus(fileStatus(order, file), Date.now())}\n`);
+  const reply = await sendControl(orderPaths(file).socket, { cmd: "status" }, 2000).catch(
+    () => null,
+  );
+  process.stdout.write(`${formatStatus(statusFromReply(order, file, reply), Date.now())}\n`);
   if (problems.length > 0) {
     process.stderr.write(`${problems.join("\n")}\n`);
     return 1;

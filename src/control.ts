@@ -5,7 +5,8 @@ import { type Server, connect, createServer } from "node:net";
 import { join } from "node:path";
 import { z } from "zod";
 import { isErrno, socketDir } from "./files.ts";
-import { StatusReport } from "./status.ts";
+import type { Order } from "./order.ts";
+import { StatusReport, fileStatus } from "./status.ts";
 
 export const ControlRequest = z.discriminatedUnion("cmd", [
   z.strictObject({ cmd: z.literal("status") }),
@@ -152,4 +153,14 @@ export function registrations(env: NodeJS.ProcessEnv = process.env): Registratio
     }
   }
   return found;
+}
+
+/** The status to show for an order: the running dispatcher's answer, or the file alone when none answers. */
+export function statusFromReply(
+  order: Order,
+  file: string,
+  reply: ControlResponse | null,
+): StatusReport {
+  if (reply?.ok === true) return reply.status;
+  return fileStatus(order, file);
 }
