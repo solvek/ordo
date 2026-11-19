@@ -33,6 +33,8 @@ describe("workerPrompt", () => {
     expect(text).toContain("statePatch");
     expect(text).toContain("note");
     expect(text).toContain("nothing may keep running in the background");
+    expect(text).toContain("Do not check the clock");
+    expect(text).toContain("Stop for time only in reply");
     expect(text).not.toContain("Up to");
   });
 

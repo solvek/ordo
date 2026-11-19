@@ -48,7 +48,7 @@ The planner names the model of each task it adds. Its prompt lists the models th
 | `notify`             | none      | Notifiers; see the README. Secrets come from the environment.                    |
 | `disallowedTools`    | see below | Tools sessions may not use. Replaces the default list.                           |
 
-`remind < wrap < finish < stop` is required. The default `disallowedTools` are `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup`, `RemoteTrigger`, `PushNotification`, `Monitor`, `EnterWorktree`, `ExitWorktree`.
+`remind < wrap < finish < stop` is required. The worker does not read the clock. It stops for time only when one of these reminders arrives. The default `disallowedTools` are `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup`, `RemoteTrigger`, `PushNotification`, `Monitor`, `EnterWorktree`, `ExitWorktree`.
 
 ## Tasks
 

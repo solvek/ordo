@@ -253,7 +253,10 @@ describe("dispatcher: time", () => {
     );
     const h = await started(file);
     const worker = h.host.lastOpen();
-    expect(worker.request.prompt).toContain("At minute 10 estimate what is left. At minute 20");
+    expect(worker.request.prompt).toContain(
+      "When the reminder says minute 10, estimate what is left",
+    );
+    expect(worker.request.prompt).toContain("minute 20");
     await h.clock.advanceMinutes(10);
     expect(worker.sent[0]?.text).toContain("10 minutes have passed");
     await h.clock.advanceMinutes(18);

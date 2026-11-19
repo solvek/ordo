@@ -10,15 +10,15 @@ import {
 } from "./order.ts";
 
 export function remindText(minutes: Minutes): string {
-  return `${String(minutes.remind)} minutes have passed. Estimate what is left and do not start work you cannot hand in by minute ${String(minutes.wrap)}.`;
+  return `Reminder from the dispatcher: ${String(minutes.remind)} minutes have passed. Estimate what is left and do not start work you cannot hand in by minute ${String(minutes.wrap)}.`;
 }
 
 export function wrapText(minutes: Minutes): string {
-  return `${String(minutes.wrap)} minutes have passed. Finish the current unit of work, save it and hand in the report. Do not start a new unit.`;
+  return `Reminder from the dispatcher: ${String(minutes.wrap)} minutes have passed. Finish the current unit of work, save it and hand in the report. Do not start a new unit.`;
 }
 
 export function finishText(minutes: Minutes): string {
-  return `${String(minutes.finish)} minutes have passed. Hand in the report now. The session is closed at minute ${String(minutes.stop)} and work not saved by then is lost.`;
+  return `Reminder from the dispatcher: ${String(minutes.finish)} minutes have passed. Hand in the report now. The session is closed at minute ${String(minutes.stop)} and work not saved by then is lost.`;
 }
 
 export const PAUSE_TEXT =
@@ -107,7 +107,11 @@ export function workerPrompt(input: WorkerPromptInput): string {
     "",
     "Rules:",
     "- When you hand in the report the session ends, and nothing may keep running in the background. If you have to wait for something, wait with one blocking command.",
-    `- Time reminders come as separate messages. At minute ${String(minutes.remind)} estimate what is left. At minute ${String(minutes.wrap)} finish the current unit of work and hand in. At minute ${String(minutes.finish)} hand in at once. At minute ${String(minutes.stop)} the session is closed and unsaved work is lost, so save results as you go.`,
+    "- Do not check the clock and do not stop because you think time is up. A note that says time ran out is not a clock. A minute named in the task is a limit the dispatcher enforces, not one you measure. Until a reminder arrives, keep working.",
+    "- The dispatcher sends time reminders as separate messages. Stop for time only in reply to one of them.",
+    `- When the reminder says minute ${String(minutes.remind)}, estimate what is left and do not start work you cannot hand in by minute ${String(minutes.wrap)}.`,
+    `- When the reminder says minute ${String(minutes.wrap)}, finish the current unit of work, save it and hand in. Do not start a new unit.`,
+    `- When the reminder says minute ${String(minutes.finish)}, hand in at once. At minute ${String(minutes.stop)} the session is closed and unsaved work is lost, so save results as you go.`,
   );
   return lines.join("\n");
 }
@@ -177,6 +181,7 @@ export function plannerPrompt(input: PlannerPromptInput): string {
     "- order: every pending task id after your change, in the order they should run. Required when you add, remove or reorder. Omit it when you only replace tasks in place or change nothing.",
     "Tasks that ran or are running stay as they are. Do not reuse their ids.",
     `A task must fit in one session of about ${String(minutes.wrap)} minutes. Split larger work.`,
+    "Do not tell a task to measure time or to stop because time is up. The dispatcher sends the reminders. A task may say what to finish when a reminder arrives.",
     "Use after for every real dependency. A task without after may start as soon as a worker is free.",
     "after may name only a task that is done, pending or running. A failed, blocked or interrupted task never becomes done, so do not put its id in after. Continue that work as a new task with no after, or with after a task that is already done, and point every pending task that named the old id at the new one.",
     input.pool > 1
