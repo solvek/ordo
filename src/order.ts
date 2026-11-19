@@ -17,7 +17,14 @@ export const INTERRUPT_REASONS = ["time", "stop", "crash", "limit"] as const;
 export type InterruptReason = (typeof INTERRUPT_REASONS)[number];
 
 /** Why a replan is owed. */
-export const REPLAN_REASONS = ["proposal", "failed", "interrupted", "limit", "answers"] as const;
+export const REPLAN_REASONS = [
+  "proposal",
+  "failed",
+  "interrupted",
+  "limit",
+  "answers",
+  "stuck",
+] as const;
 export type ReplanReason = (typeof REPLAN_REASONS)[number];
 
 /** An order the dispatcher refuses to run, or a change it refuses to apply. */
@@ -349,6 +356,27 @@ export function pendingTasks(order: Order): Task[] {
   return order.tasks.filter((task) => task.status === "pending");
 }
 
+/** Statuses that already satisfy `after`, or still can. The others never become `done`. */
+const OPENABLE = new Set<TaskStatus>(["done", "pending", "running"]);
+
+/**
+ * Pending tasks whose `after` names a task that will not become `done`.
+ * The order may be saved in this state; a planner patch that leaves it is refused.
+ */
+export function backlogBlockers(order: Order): string[] {
+  const status = new Map(order.tasks.map((task) => [task.id, task.status]));
+  const problems: string[] = [];
+  for (const task of order.tasks) {
+    if (task.status !== "pending") continue;
+    for (const dep of task.after ?? []) {
+      const depStatus = status.get(dep);
+      if (depStatus === undefined || OPENABLE.has(depStatus)) continue;
+      problems.push(`tasks.${task.id}.after: ${dep} is ${depStatus} and will not be done`);
+    }
+  }
+  return problems;
+}
+
 /** Pending tasks whose `after` tasks are all done, in file order. */
 export function runnableTasks(order: Order): Task[] {
   const status = new Map(order.tasks.map((task) => [task.id, task.status]));
@@ -448,7 +476,7 @@ export function applyPlan(order: Order, reply: PlannerReply, consumed: number): 
   const next: Order = { ...order, state, tasks: [...kept, ...pending] };
   if (rest.length > 0) next.replan = rest;
   else delete next.replan;
-  const problems = orderProblems(next);
+  const problems = [...orderProblems(next), ...backlogBlockers(next)];
   if (problems.length > 0) throw new OrderError(problems.join("\n"));
   return next;
 }

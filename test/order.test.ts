@@ -209,6 +209,12 @@ describe("applyPlan", () => {
     );
   });
 
+  it("rejects a pending task that waits on a task that will not be done", () => {
+    expect(() =>
+      applyPlan(base(), { upsert: [{ id: "ch3", after: ["ch2"], ...draft }] }, 2),
+    ).toThrow(/ch2 is failed and will not be done/);
+  });
+
   it("rejects an after that names a missing task", () => {
     expect(() =>
       applyPlan(

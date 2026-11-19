@@ -21,6 +21,7 @@ import {
   addQuestions,
   answerQuestion,
   applyPlan,
+  backlogBlockers,
   formatOrder,
   minutesOf,
   modelText,
@@ -440,6 +441,19 @@ export class Dispatcher {
         this.waitingOwnerSince = this.clock.now();
         this.log.warn("waiting for the owner's answers", { questions: open.map((q) => q.id) });
       }
+      return;
+    }
+    const blockers = backlogBlockers(this.order);
+    const waiting = pending[0];
+    if (blockers.length > 0 && waiting !== undefined && (this.order.replan?.length ?? 0) === 0) {
+      this.order = withReplan(this.order, {
+        reason: "stuck",
+        task: waiting.id,
+        text: blockers.join("\n"),
+      });
+      this.save();
+      this.log.warn("pending tasks wait for tasks that will not be done; replanning");
+      this.pump();
       return;
     }
     this.finish({

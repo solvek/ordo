@@ -168,15 +168,55 @@ describe("dispatcher: the loop", () => {
     expect(statuses(file)).toEqual(["ch1:done", "ch2:pending"]);
   });
 
-  it("stops as stuck when pending tasks wait for a task that will not be done", async () => {
+  it("rejects a patch that leaves a task waiting on a failed one, then runs the continuation", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2", "    after: [ch1]\n")}`));
+    const h = await started(file);
+    h.host.answer({ outcome: "failed", summary: "No.", proposal: "finish the rest" });
+    await flush();
+    expect(h.host.lastOpen().request.prompt).toContain("never becomes done");
+    h.host.answer({});
+    await flush();
+    expect(h.host.lastOpen().request.role).toBe("planner");
+    expect(statuses(file)).toEqual(["ch1:failed", "ch2:pending"]);
+    h.host.answer({
+      upsert: [backlogTask("ch1b"), backlogTask("ch2", ["ch1b"])],
+      order: ["ch1b", "ch2"],
+    });
+    await flush();
+    expect(statuses(file)).toEqual(["ch1:failed", "ch1b:running", "ch2:pending"]);
+    h.host.answer(done());
+    await flush();
+    h.host.answer(done());
+    expect((await h.dispatcher.result).reason).toBe("done");
+  });
+
+  it("stops as replan-failed when the planner twice leaves a task waiting on a failed one", async () => {
     const file = tempOrder(orderText(`${task("ch1")}${task("ch2", "    after: [ch1]\n")}`));
     const h = await started(file);
     h.host.answer({ outcome: "failed", summary: "No.", proposal: "" });
     await flush();
     h.host.answer({});
+    await flush();
+    h.host.answer({});
     const result = await h.dispatcher.result;
-    expect(result.reason).toBe("stuck");
-    expect(result.detail).toContain("ch2");
+    expect(result.reason).toBe("replan-failed");
+    expect(result.detail).toMatch(/will not be done/);
+    expect(statuses(file)).toEqual(["ch1:failed", "ch2:pending"]);
+  });
+
+  it("replans a backlog that already waits on a task that will not be done", async () => {
+    const file = tempOrder(
+      orderText(`${task("ch1", "    status: failed\n")}${task("ch2", "    after: [ch1]\n")}`),
+    );
+    const h = await started(file);
+    const planner = h.host.lastOpen();
+    expect(planner.request.role).toBe("planner");
+    expect(planner.request.prompt).toContain("ch1 is failed and will not be done");
+    h.host.answer({ upsert: [backlogTask("ch2")] });
+    await flush();
+    expect(statuses(file)).toEqual(["ch1:failed", "ch2:running"]);
+    h.host.answer(done());
+    expect((await h.dispatcher.result).reason).toBe("done");
   });
 });
 

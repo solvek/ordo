@@ -52,15 +52,15 @@ The planner names the model of each task it adds. Its prompt lists the models th
 
 ## Tasks
 
-| Field    | Meaning                                                                                                                              |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `id`     | Unique. A replanned task gets a new id; ids of tasks that ran are never reused.                                                      |
-| `title`  | One line.                                                                                                                            |
-| `model`  | See Models.                                                                                                                          |
-| `after`  | Ids that must be `done` before this task starts. Without it a task may start as soon as a worker is free. Tasks start in file order. |
-| `prompt` | The task. Say where results go and what the report should contain.                                                                   |
-| `status` | Written by the dispatcher; `pending` when missing.                                                                                   |
-| `report` | Written by the dispatcher.                                                                                                           |
+| Field    | Meaning                                                                                                                                                                                                                                                                     |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`     | Unique. A replanned task gets a new id; ids of tasks that ran are never reused.                                                                                                                                                                                             |
+| `title`  | One line.                                                                                                                                                                                                                                                                   |
+| `model`  | See Models.                                                                                                                                                                                                                                                                 |
+| `after`  | Ids that must be `done` before this task starts. Without it a task may start as soon as a worker is free. Tasks start in file order. A pending task may name only tasks that are `done`, `pending` or `running`. `failed`, `blocked` and `interrupted` never become `done`. |
+| `prompt` | The task. Say where results go and what the report should contain.                                                                                                                                                                                                          |
+| `status` | Written by the dispatcher; `pending` when missing.                                                                                                                                                                                                                          |
+| `report` | Written by the dispatcher.                                                                                                                                                                                                                                                  |
 
 Statuses:
 
@@ -88,7 +88,7 @@ Statuses:
 
 ## Fields the dispatcher keeps
 
-- `replan`: replan reasons not yet handled (`proposal`, `failed`, `interrupted`, `limit`, `answers`), each with its `task` and `text`. Written before the planner starts, removed when its patch is saved, so a dispatcher stopped in between replans first on its next start.
+- `replan`: replan reasons not yet handled (`proposal`, `failed`, `interrupted`, `limit`, `answers`, `stuck`), each with its `task` and `text`. Written before the planner starts, removed when its patch is saved, so a dispatcher stopped in between replans first on its next start. `stuck` means pending tasks wait on tasks that will not become `done`.
 - `questions`: `id`, `task`, `text`, `askedAt`, and once answered `answer`, `answeredBy` (`owner` or the decider's model), `answeredAt`.
 
 ## Rules the dispatcher keeps
@@ -96,5 +96,6 @@ Statuses:
 - The planner returns a patch, not the whole state and not the whole backlog. `remove` drops pending ids. `upsert` replaces a pending task in place or adds a new one. `order`, when present, is exactly the pending ids after the edit and becomes their order; it is required when a task is added or removed, and omitted when tasks are only replaced in place or nothing changes. Tasks that are not pending stay, in file order, and their ids are not reused. `statePatch` is a JSON Merge Patch on the state at the moment the reply is applied, so a key a worker wrote while the planner ran stays unless the patch names that key. Omit it to leave the state alone. The replan items the planner was shown are dropped; items queued while it ran stay.
 - While the planner runs, no new task starts.
 - A planner that fails twice in a row (timeout, unreadable reply, invalid patch) stops the dispatcher once the running tasks are done (`replan-failed`). The owed replan stays in the file.
-- When pending tasks wait for tasks that will never be done and no question is open, the dispatcher stops as `stuck`.
+- A planner patch that leaves a pending task waiting on a `failed`, `blocked` or `interrupted` task is rejected, and the planner is asked again. When the file is already in that state and no replan is owed, the dispatcher calls the planner before it stops. Two failed replans in a row stop the dispatcher once the running tasks are done (`replan-failed`).
+- When pending tasks still cannot start and no question is open, the dispatcher stops as `stuck`.
 - If the order file changes on disk while the dispatcher runs, it does not overwrite it: it stops (`conflict`) and leaves its own version in `<order>.ordo/order.conflict.yaml`. Change an order only through `ordo answer`, or after `ordo stop`.

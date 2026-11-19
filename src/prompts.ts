@@ -128,6 +128,8 @@ function reasonText(order: Order, item: ReplanItem): string {
       return `Task ${title} was cut off by the usage limit of the account${at}, without a report. Look at what its worker left (the files and state the task names) and rewrite the backlog so the unfinished part gets done properly. Do not redo what is finished, and do not simply repeat the whole task when part of it is done.`;
     case "answers":
       return `Task ${title} was blocked on questions to the owner. They are answered now:\n${item.text}\nPlan how the work goes on with these answers.`;
+    case "stuck":
+      return `Pending tasks wait on tasks that will not become done:\n${block(item.text)}\nRewrite after so a task can start.`;
   }
 }
 
@@ -176,6 +178,7 @@ export function plannerPrompt(input: PlannerPromptInput): string {
     "Tasks that ran or are running stay as they are. Do not reuse their ids.",
     `A task must fit in one session of about ${String(minutes.wrap)} minutes. Split larger work.`,
     "Use after for every real dependency. A task without after may start as soon as a worker is free.",
+    "after may name only a task that is done, pending or running. A failed, blocked or interrupted task never becomes done, so do not put its id in after. Continue that work as a new task with no after, or with after a task that is already done, and point every pending task that named the old id at the new one.",
     input.pool > 1
       ? `Up to ${String(input.pool)} tasks run at the same time in the same directory: tasks that write the same files must be ordered with after.`
       : "Tasks run one at a time, in backlog order.",

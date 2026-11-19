@@ -53,6 +53,7 @@ describe("workerPrompt", () => {
     expect(text).toContain("- small-model via test");
     expect(text).toContain("Up to 3 tasks run at the same time");
     expect(text).toContain("upsert");
+    expect(text).toContain("never becomes done");
     expect(text).toContain("summary: Done well.");
   });
 });
