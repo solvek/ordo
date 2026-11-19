@@ -49,13 +49,15 @@ A good first task is a planning task: it looks at the material and, in its `prop
 | `ordo run <order> [--pool N] [--use-api-key] [-v]` | Run in the foreground (for systemd, tmux, debugging). Ctrl-C pauses, a second Ctrl-C stops.                                                          |
 | `ordo status [<order>] [--json]`                   | Status of one order, or of every running dispatcher. Works from the file when nothing runs.                                                          |
 | `ordo list`                                        | Running dispatchers.                                                                                                                                 |
-| `ordo pause <order> [--drain]`                     | Start nothing new. Workers are asked to hand in now (with `--drain`, they finish their tasks). A running or owed replan finishes. The process waits. |
-| `ordo resume <order>`                              | Go on after a pause.                                                                                                                                 |
-| `ordo stop <order>`                                | Close every session now and exit. Running tasks become interrupted and are replanned on the next start.                                              |
-| `ordo answer <order> <id> <text>`                  | Answer an open question. Through the dispatcher when it runs, in the file when it does not.                                                          |
-| `ordo check <order>`                               | Validate the order, the model plugins and the notifiers.                                                                                             |
-| `ordo logs <order> [-n N] [-f]`                    | The dispatcher log.                                                                                                                                  |
-| `ordo notify-test <order>`                         | Send a test notification; for Telegram without a chat id, list the chats that wrote to the bot.                                                      |
+| `ordo pause [<order>] [--drain]`                   | Start nothing new. Workers are asked to hand in now (with `--drain`, they finish their tasks). A running or owed replan finishes. The process waits. |
+| `ordo resume [<order>]`                            | Go on after a pause.                                                                                                                                 |
+| `ordo stop [<order>]`                              | Close every session now and exit. Running tasks become interrupted and are replanned on the next start.                                              |
+| `ordo answer [<order>] <id> <text>`                | Answer an open question. Through the dispatcher when it runs, in the file when it does not.                                                          |
+| `ordo check [<order>]`                             | Validate the order, the model plugins and the notifiers.                                                                                             |
+| `ordo logs [<order>] [-n N] [-f]`                  | The dispatcher log.                                                                                                                                  |
+| `ordo notify-test [<order>]`                       | Send a test notification; for Telegram without a chat id, list the chats that wrote to the bot.                                                      |
+
+`pause`, `resume`, `stop`, `answer`, `check`, `logs` and `notify-test` can leave the order out when exactly one dispatcher is running: the command uses that order. With none or several running, name the file. `start` and `run` always take it.
 
 Exit code of `run`: 0 when the order is done or was stopped, 1 otherwise.
 

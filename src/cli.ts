@@ -30,13 +30,17 @@ Usage:
   ordo run <order.yaml> [--pool N] [--use-api-key] [-v] run in the foreground
   ordo status [<order.yaml>] [--json]                   status of one order or of all running
   ordo list                                             running dispatchers
-  ordo pause <order.yaml> [--drain]                     ask workers to hand in, start nothing new
-  ordo resume <order.yaml>                              go on after a pause
-  ordo stop <order.yaml>                                close every session now and exit
-  ordo answer <order.yaml> <question-id> <text>         answer a question of a blocked task
-  ordo check <order.yaml>                               validate an order
-  ordo logs <order.yaml> [-n N] [-f]                    the dispatcher log
-  ordo notify-test <order.yaml>                         send a test notification
+  ordo pause [<order.yaml>] [--drain]                  ask workers to hand in, start nothing new
+  ordo resume [<order.yaml>]                            go on after a pause
+  ordo stop [<order.yaml>]                              close every session now and exit
+  ordo answer [<order.yaml>] <question-id> <text>       answer a question of a blocked task
+  ordo check [<order.yaml>]                             validate an order
+  ordo logs [<order.yaml>] [-n N] [-f]                  the dispatcher log
+  ordo notify-test [<order.yaml>]                       send a test notification
+
+pause, resume, stop, answer, check, logs and notify-test can leave the order out
+when exactly one dispatcher is running: the command uses that order. With none or
+several running, name the file. start and run always take it.
 
 Environment: ORDO_POOL, ORDO_LOG_LEVEL (console, default warn), ORDO_FILE_LOG_LEVEL
 (default info), OPENAI_API_KEY when an order uses the openai plugin, and what the
@@ -84,25 +88,19 @@ async function main(argv: string[]): Promise<number> {
     case "list":
       return list();
     case "pause":
-      return control(needFile(), { cmd: "pause", drain: values.drain });
+      return control(await orderArg(command, file), { cmd: "pause", drain: values.drain });
     case "resume":
-      return control(needFile(), { cmd: "resume" });
+      return control(await orderArg(command, file), { cmd: "resume" });
     case "stop":
-      return control(needFile(), { cmd: "stop" });
-    case "answer": {
-      const [, id, ...words] = rest;
-      const text = words.join(" ").trim();
-      if (id === undefined || text === "") {
-        throw new OrderError("usage: ordo answer <order.yaml> <question-id> <text>");
-      }
-      return answer(needFile(), id, text);
-    }
+      return control(await orderArg(command, file), { cmd: "stop" });
+    case "answer":
+      return answerCommand(rest);
     case "check":
-      return check(needFile());
+      return check(await orderArg(command, file));
     case "logs":
-      return logs(needFile(), values.lines, values.follow);
+      return logs(await orderArg(command, file), values.lines, values.follow);
     case "notify-test":
-      return notifyTest(needFile());
+      return notifyTest(await orderArg(command, file));
     default:
       throw new OrderError(`unknown command ${command}; see ordo help`);
   }
@@ -221,6 +219,62 @@ async function start(file: string, pool: number | undefined, useApiKey: boolean)
   }
   process.stderr.write(`the dispatcher did not answer in 30 s; see ${paths.stderr}\n`);
   return 1;
+}
+
+/** Orders whose dispatcher answers right now. A registration left by a dead process is skipped. */
+async function runningOrders(): Promise<string[]> {
+  const orders: string[] = [];
+  for (const entry of registrations()) {
+    const reply = await sendControl(entry.socket, { cmd: "status" }, 2000).catch(() => null);
+    if (reply?.ok === true) orders.push(entry.order);
+  }
+  return orders;
+}
+
+/**
+ * The order a command acts on. A given path wins. With none given, the one running dispatcher
+ * is used; none or several is an error, because the command would not know which order.
+ */
+async function orderArg(command: string, file: string | undefined): Promise<string> {
+  if (file !== undefined && file !== "") return resolve(file);
+  const orders = await runningOrders();
+  if (orders.length === 1) {
+    const only = orders[0];
+    if (only !== undefined) return only;
+  }
+  if (orders.length === 0) {
+    throw new OrderError(`no dispatcher is running; usage: ordo ${command} <order.yaml>`);
+  }
+  throw new OrderError(`more than one order is running; name it:\n${orders.join("\n")}`);
+}
+
+const ANSWER_USAGE = "usage: ordo answer <order.yaml> <question-id> <text>";
+
+/** `answer` puts the order first. When it is omitted, the first word is the question id. */
+async function answerCommand(rest: string[]): Promise<number> {
+  const [first, ...after] = rest;
+  if (first === undefined) throw new OrderError(ANSWER_USAGE);
+  const given = resolve(first);
+  if (existsSync(given)) {
+    const id = after[0];
+    const text = after.slice(1).join(" ").trim();
+    if (id === undefined || text === "") throw new OrderError(ANSWER_USAGE);
+    return answer(given, id, text);
+  }
+  const orders = await runningOrders();
+  if (orders.length === 1) {
+    const only = orders[0];
+    const text = after.join(" ").trim();
+    if (only === undefined || text === "") throw new OrderError(ANSWER_USAGE);
+    return answer(only, first, text);
+  }
+  if (orders.length > 1) {
+    throw new OrderError(`more than one order is running; name it:\n${orders.join("\n")}`);
+  }
+  const id = after[0];
+  const text = after.slice(1).join(" ").trim();
+  if (id === undefined || text === "") throw new OrderError(ANSWER_USAGE);
+  return answer(given, id, text);
 }
 
 async function statusOf(file: string): Promise<StatusReport> {

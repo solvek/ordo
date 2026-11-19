@@ -1,14 +1,15 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { sessionEnv } from "../src/claude.ts";
-import { sendControl, serveControl, statusFromReply } from "../src/control.ts";
+import { register, sendControl, serveControl, statusFromReply } from "../src/control.ts";
+import { orderPaths } from "../src/files.ts";
 import { prettyLine } from "../src/logger.ts";
 import { type FetchLike, commandPlugin, createNotifiers, telegramPlugin } from "../src/notify.ts";
 import { DEFAULT_MINUTES, parseOrder } from "../src/order.ts";
 import { plannerPrompt, workerPrompt } from "../src/prompts.ts";
-import { fileStatus } from "../src/status.ts";
+import { fileStatus, type StatusReport } from "../src/status.ts";
 import { contentLines, prefixed, redact } from "../src/transcript.ts";
 import { cleanTemp, orderText, task, tempDir, tempOrder } from "./helpers.ts";
 
@@ -218,6 +219,31 @@ describe("cli", () => {
       env: { PATH: process.env.PATH ?? "", XDG_RUNTIME_DIR: join(cwd, "run"), ...env },
     });
 
+  /** Async, so a dispatcher served by this process can answer while the command runs. */
+  const ordoLive = (args: string[], cwd: string, env: Record<string, string>) =>
+    new Promise<{ status: number | null; stdout: string; stderr: string }>(
+      (resolvePromise, reject) => {
+        const child = spawn(process.execPath, [cli, ...args], {
+          cwd,
+          env: { PATH: process.env.PATH ?? "", XDG_RUNTIME_DIR: join(cwd, "run"), ...env },
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => {
+          stdout += chunk;
+        });
+        child.stderr.on("data", (chunk: string) => {
+          stderr += chunk;
+        });
+        child.on("error", reject);
+        child.on("close", (status) => {
+          resolvePromise({ status, stdout, stderr });
+        });
+      },
+    );
+
   it("checks the examples", () => {
     for (const example of ["translate-book.yaml", "tidy-notes.yaml"]) {
       const result = ordo(["check", resolve("examples", example)], tempDir(), {
@@ -274,6 +300,96 @@ describe("cli", () => {
     expect(ordo(["status", file], cwd).stdout).toContain("tasks: pending 1, done 1");
     expect(ordo(["pause", file], cwd).stderr).toContain("no dispatcher runs");
     expect(ordo(["list"], cwd).stdout).toBe("no dispatcher is running\n");
+    expect(ordo(["pause"], cwd).stderr).toContain("no dispatcher is running");
+  });
+
+  it("uses the only running order when the command names none", async () => {
+    const cwd = tempDir();
+    const env = { PATH: process.env.PATH ?? "", XDG_RUNTIME_DIR: join(cwd, "run") };
+    const file = tempOrder(orderText(task("ch1")));
+    const paths = orderPaths(file, env);
+    const order = parseOrder(readFileSync(file, "utf8"));
+    const status: StatusReport = {
+      ...fileStatus(order, paths.order),
+      mode: "running",
+      pid: 7,
+      pool: 1,
+    };
+    let paused = false;
+    let answered = "";
+    const close = await serveControl(paths.socket, (request) => {
+      if (request.cmd === "pause") paused = true;
+      if (request.cmd === "answer") answered = `${request.id}:${request.text}`;
+      return { ok: true, status };
+    });
+    const unregister = register(
+      {
+        pid: 7,
+        order: paths.order,
+        cwd,
+        socket: paths.socket,
+        startedAt: "2030-01-01T00:00:00.000Z",
+      },
+      env,
+    );
+    try {
+      const pause = await ordoLive(["pause"], cwd, env);
+      expect(pause.status).toBe(0);
+      expect(pause.stderr).toBe("");
+      expect(paused).toBe(true);
+      expect(pause.stdout).toContain("mode: running");
+      const answer = await ordoLive(["answer", "q1", "yes"], cwd, env);
+      expect(answer.status).toBe(0);
+      expect(answered).toBe("q1:yes");
+      mkdirSync(paths.runDir, { recursive: true });
+      writeFileSync(
+        paths.log,
+        `${JSON.stringify({ level: 30, time: Date.parse("2030-01-01T00:00:00Z"), msg: "task started" })}\n`,
+      );
+      expect((await ordoLive(["logs", "-n", "5"], cwd, env)).stdout).toContain("task started");
+    } finally {
+      unregister();
+      close();
+    }
+  });
+
+  it("refuses to guess when more than one order is running", async () => {
+    const cwd = tempDir();
+    const env = { PATH: process.env.PATH ?? "", XDG_RUNTIME_DIR: join(cwd, "run") };
+    const closes: (() => void)[] = [];
+    const drop: (() => void)[] = [];
+    try {
+      for (const id of ["a", "b"]) {
+        const file = tempOrder(orderText(task(id)));
+        const paths = orderPaths(file, env);
+        const order = parseOrder(readFileSync(file, "utf8"));
+        const status: StatusReport = {
+          ...fileStatus(order, paths.order),
+          mode: "running",
+          pid: 1,
+          pool: 1,
+        };
+        closes.push(await serveControl(paths.socket, () => ({ ok: true, status })));
+        drop.push(
+          register(
+            {
+              pid: 1,
+              order: paths.order,
+              cwd,
+              socket: paths.socket,
+              startedAt: "2030-01-01T00:00:00.000Z",
+            },
+            env,
+          ),
+        );
+      }
+      const result = await ordoLive(["pause"], cwd, env);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("more than one order is running");
+    } finally {
+      for (const unregister of drop) unregister();
+      for (const close of closes) close();
+    }
   });
 
   it("prints help", () => {
