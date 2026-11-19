@@ -35,7 +35,25 @@ describe("workerPrompt", () => {
     expect(text).toContain("nothing may keep running in the background");
     expect(text).toContain("Do not check the clock");
     expect(text).toContain("Stop for time only in reply");
+    expect(text).toContain("hand in. Do not start a new unit");
+    expect(text).not.toContain("handing in is optional");
     expect(text).not.toContain("Up to");
+  });
+
+  it("makes handing in optional when the task is the only one left", () => {
+    const order = parseOrder(orderText(task("ch1")));
+    const [first] = order.tasks;
+    if (first === undefined) throw new Error("no task");
+    const text = workerPrompt({
+      order,
+      task: first,
+      minutes: DEFAULT_MINUTES,
+      pool: 1,
+      running: [],
+    });
+    expect(text).toContain("You are the only task left, so handing in is optional");
+    expect(text).toContain("note: optional");
+    expect(text).not.toContain("Do not start a new unit");
   });
 
   it("tells the planner why it is called and which model it is", () => {

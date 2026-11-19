@@ -42,6 +42,7 @@ import {
   STOP_SUMMARY,
   deciderPrompt,
   finishText,
+  handoffOptional,
   plannerPrompt,
   remindText,
   timeoutSummary,
@@ -491,6 +492,7 @@ export class Dispatcher {
       pauseAsked: false,
     };
     const minute = 60_000;
+    const wrapOptional = handoffOptional(this.order, task.id, [...this.workers.keys()]);
     const send = (text: string, priority: "now" | "next", label: string) => () => {
       this.log.info("time reminder", { task: task.id, at: label });
       session.send(text, priority);
@@ -498,9 +500,12 @@ export class Dispatcher {
     run.timers.push(
       this.clock.delay(
         this.minutes.remind * minute,
-        send(remindText(this.minutes), "next", "remind"),
+        send(remindText(this.minutes, wrapOptional), "next", "remind"),
       ),
-      this.clock.delay(this.minutes.wrap * minute, send(wrapText(this.minutes), "now", "wrap")),
+      this.clock.delay(
+        this.minutes.wrap * minute,
+        send(wrapText(this.minutes, wrapOptional), "now", "wrap"),
+      ),
       this.clock.delay(
         this.minutes.finish * minute,
         send(finishText(this.minutes), "now", "finish"),
