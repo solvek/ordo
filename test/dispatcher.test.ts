@@ -233,7 +233,6 @@ describe("dispatcher: time", () => {
     await h.clock.advanceMinutes(15);
     expect(worker.sent[1]).toMatchObject({ priority: "now" });
     expect(worker.sent[1]?.text).toContain("45 minutes have passed");
-    expect(worker.sent[1]?.text).toContain("hand in the report");
     await h.clock.advanceMinutes(5);
     expect(worker.sent[2]?.text).toContain("50 minutes have passed");
     expect(worker.sent[2]?.text).toContain("closed at minute 55");
@@ -243,18 +242,6 @@ describe("dispatcher: time", () => {
     expect(order.tasks[0]?.status).toBe("interrupted");
     expect(order.tasks[0]?.report).toMatchObject({ reason: "time", minutes: 55 });
     expect(h.host.lastOpen().request.role).toBe("planner");
-  });
-
-  it("lets the only task left keep working when the wrap reminder arrives", async () => {
-    const file = tempOrder(orderText(task("ch1")));
-    const h = await started(file);
-    const worker = h.host.lastOpen();
-    expect(worker.request.prompt).toContain("handing in is optional");
-    await h.clock.advanceMinutes(30);
-    expect(worker.sent[0]?.text).toContain("Handing in at minute 45 is optional");
-    await h.clock.advanceMinutes(15);
-    expect(worker.sent[1]?.text).toContain("handing in now is optional");
-    expect(worker.closed).toBe(false);
   });
 
   it("takes the minutes from the order settings, into the prompt and the reminders", async () => {

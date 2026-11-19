@@ -36,17 +36,17 @@ The planner names the model of each task it adds. Its prompt lists the models th
 
 ## Settings
 
-| Key                  | Default   | Meaning                                                                                                                          |
-| -------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `pool`               | 1         | Tasks that run at once. `--pool` and `ORDO_POOL` override it.                                                                    |
-| `minutes.remind`     | 30        | First reminder: estimate what is left. Does not interrupt the current tool call.                                                 |
-| `minutes.wrap`       | 45        | Finish the current unit of work and hand in. When this is the only task left, handing in is optional and the worker keeps going. |
-| `minutes.finish`     | 50        | Hand in at once.                                                                                                                 |
-| `minutes.stop`       | 55        | The session is closed; the task becomes `interrupted` and is replanned.                                                          |
-| `minutes.replan`     | 10        | Time of a planner or decider session.                                                                                            |
-| `minutes.limitRetry` | 30        | Wait after a usage limit with no known reset time.                                                                               |
-| `notify`             | none      | Notifiers; see the README. Secrets come from the environment.                                                                    |
-| `disallowedTools`    | see below | Tools sessions may not use. Replaces the default list.                                                                           |
+| Key                  | Default   | Meaning                                                                          |
+| -------------------- | --------- | -------------------------------------------------------------------------------- |
+| `pool`               | 1         | Tasks that run at once. `--pool` and `ORDO_POOL` override it.                    |
+| `minutes.remind`     | 30        | First reminder: estimate what is left. Does not interrupt the current tool call. |
+| `minutes.wrap`       | 45        | Finish the current unit of work and hand in.                                     |
+| `minutes.finish`     | 50        | Hand in at once.                                                                 |
+| `minutes.stop`       | 55        | The session is closed; the task becomes `interrupted` and is replanned.          |
+| `minutes.replan`     | 10        | Time of a planner or decider session.                                            |
+| `minutes.limitRetry` | 30        | Wait after a usage limit with no known reset time.                               |
+| `notify`             | none      | Notifiers; see the README. Secrets come from the environment.                    |
+| `disallowedTools`    | see below | Tools sessions may not use. Replaces the default list.                           |
 
 `remind < wrap < finish < stop` is required. The worker does not read the clock. It stops for time only when one of these reminders arrives. The default `disallowedTools` are `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup`, `RemoteTrigger`, `PushNotification`, `Monitor`, `EnterWorktree`, `ExitWorktree`.
 

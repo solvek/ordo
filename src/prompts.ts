@@ -9,32 +9,12 @@ import {
   modelText,
 } from "./order.ts";
 
-export function remindText(minutes: Minutes, optional: boolean): string {
-  const passed = `Reminder from the dispatcher: ${String(minutes.remind)} minutes have passed. Estimate what is left`;
-  if (optional) {
-    return `${passed}. Handing in at minute ${String(minutes.wrap)} is optional, so you may start work you can save by minute ${String(minutes.finish)}.`;
-  }
-  return `${passed} and do not start work you cannot hand in by minute ${String(minutes.wrap)}.`;
+export function remindText(minutes: Minutes): string {
+  return `Reminder from the dispatcher: ${String(minutes.remind)} minutes have passed. Estimate what is left and do not start work you cannot hand in by minute ${String(minutes.wrap)}.`;
 }
 
-export function wrapText(minutes: Minutes, optional: boolean): string {
-  const passed = `Reminder from the dispatcher: ${String(minutes.wrap)} minutes have passed.`;
-  if (optional) {
-    return `${passed} Save what is done. You are the only task left, so handing in now is optional: keep working if this task is not finished.`;
-  }
-  return `${passed} Finish the current unit of work, save it and hand in the report. Do not start a new unit.`;
-}
-
-/** True when no other task is pending or running, so nothing is waiting on this session to end. */
-export function handoffOptional(
-  order: Order,
-  taskId: string,
-  runningIds: readonly string[],
-): boolean {
-  const otherWaiting = order.tasks.some(
-    (item) => item.id !== taskId && (item.status === "pending" || item.status === "running"),
-  );
-  return !otherWaiting && runningIds.every((id) => id === taskId);
+export function wrapText(minutes: Minutes): string {
+  return `Reminder from the dispatcher: ${String(minutes.wrap)} minutes have passed. Finish the current unit of work, save it and hand in the report. Do not start a new unit.`;
 }
 
 export function finishText(minutes: Minutes): string {
@@ -86,11 +66,6 @@ export interface WorkerPromptInput {
 export function workerPrompt(input: WorkerPromptInput): string {
   const { order, task, minutes } = input;
   const backlog = order.tasks.filter((item) => item.status === "pending" && item.id !== task.id);
-  const alone = handoffOptional(
-    order,
-    task.id,
-    input.running.map((item) => item.id),
-  );
   const lines = [
     "You are a worker of Ordo, a dispatcher that runs a long piece of work as short sessions.",
     "You do one task of a work order. Do not edit the order file: the dispatcher keeps it.",
@@ -125,9 +100,7 @@ export function workerPrompt(input: WorkerPromptInput): string {
     "- outcome: done when the task is complete; failed when it cannot be completed as given (say why, and put what is left in proposal); blocked when it cannot go on without the owner's answers (ask them in questions).",
     "- summary: a few sentences on what was done.",
     "- proposal: what to add, drop or split in the backlog. Empty when the backlog stays. A non-empty proposal calls the planner, so do not put notes here.",
-    alone
-      ? "- note: optional. You are the only task left, so omit it unless the owner should see it. A note does not call the planner. A later session does not read this report, so results belong where the task and the context say."
-      : "- note: something the owner or a later task should see when the backlog stays as it is. Omit it when there is nothing. A note does not call the planner. Later sessions do not read this report, so also save the note where the order context says.",
+    "- note: something the owner or a later task should see when the backlog stays as it is. Omit it when there is nothing. A note does not call the planner. Later sessions do not read this report, so also save the note where the order context says.",
     "- questions: only with blocked. Each question self-contained: the owner reads it on a phone.",
     "- statePatch: only the top-level state keys that changed, each with its full new value; null removes a key. Omit it when the state did not change.",
     "Write summary, proposal and questions in the language of the order context.",
@@ -136,12 +109,8 @@ export function workerPrompt(input: WorkerPromptInput): string {
     "- When you hand in the report the session ends, and nothing may keep running in the background. If you have to wait for something, wait with one blocking command.",
     "- Do not check the clock and do not stop because you think time is up. A note that says time ran out is not a clock. A minute named in the task is a limit the dispatcher enforces, not one you measure. Until a reminder arrives, keep working.",
     "- The dispatcher sends time reminders as separate messages. Stop for time only in reply to one of them.",
-    alone
-      ? `- When the reminder says minute ${String(minutes.remind)}, estimate what is left. Handing in at minute ${String(minutes.wrap)} is optional, so you may start work you can save by minute ${String(minutes.finish)}.`
-      : `- When the reminder says minute ${String(minutes.remind)}, estimate what is left and do not start work you cannot hand in by minute ${String(minutes.wrap)}.`,
-    alone
-      ? `- When the reminder says minute ${String(minutes.wrap)}, save what is done. You are the only task left, so handing in is optional: keep working if this task is not finished.`
-      : `- When the reminder says minute ${String(minutes.wrap)}, finish the current unit of work, save it and hand in. Do not start a new unit.`,
+    `- When the reminder says minute ${String(minutes.remind)}, estimate what is left and do not start work you cannot hand in by minute ${String(minutes.wrap)}.`,
+    `- When the reminder says minute ${String(minutes.wrap)}, finish the current unit of work, save it and hand in. Do not start a new unit.`,
     `- When the reminder says minute ${String(minutes.finish)}, hand in at once. At minute ${String(minutes.stop)} the session is closed and unsaved work is lost, so save results as you go.`,
   );
   return lines.join("\n");
