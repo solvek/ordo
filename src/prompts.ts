@@ -8,6 +8,7 @@ import {
   type ReplanItem,
   type Task,
   modelText,
+  sameModel,
 } from "./order.ts";
 
 export function tickText(minute: number, minutes: Minutes): string {
@@ -215,7 +216,9 @@ export function plannerPrompt(input: PlannerPromptInput): string {
     "",
     "Each task names its model as {plugin, name, effort}. Models the order uses so far:",
     models === "" ? "(none)" : models,
-    `You run as ${modelText(input.runAs)}. Do not give tasks this model unless the reason below asks for it explicitly; prefer the cheapest model that can do the task. A task that needs no tools may use a plugin without them, when the order uses one.`,
+    sameModel(input.runAs, order.planner)
+      ? `You run as ${modelText(order.planner)}. Do not give tasks this model unless the reason below asks for it explicitly; prefer the cheapest model that can do the task. A task that needs no tools may use a plugin without them, when the order uses one.`
+      : `You run as ${modelText(input.runAs)}, in place of the order's planner ${modelText(order.planner)}, whose plugin is limited. Give tasks the models the order uses, as its planner would: do not give them ${modelText(order.planner)} unless the reason below asks for it explicitly; prefer the cheapest model that can do the task.`,
     "",
     "Why you are called:",
     items.map((item) => reasonText(order, item)).join("\n\n"),

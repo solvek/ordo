@@ -384,7 +384,9 @@ describe("dispatcher: usage limit", () => {
     expect(fallback.role).toBe("planner");
     expect(fallback.model).toBe("claude-sonnet-5-5");
     expect(fallback.effort).toBe("high");
-    expect(fallback.prompt).toContain("You run as claude-sonnet-5-5 (high) via claude-code");
+    expect(fallback.prompt).toContain(
+      "You run as claude-sonnet-5-5 (high) via claude-code, in place of the order's planner big-model via test",
+    );
     expect(fallback.prompt).toContain("add ch3");
     expect(h.dispatcher.status().mode).toBe("replanning");
     claude.answer({});
