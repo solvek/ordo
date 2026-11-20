@@ -60,6 +60,7 @@ describe("workerPrompt", () => {
       ),
     );
     const text = plannerPrompt({
+      runAs: order.planner,
       order,
       items: [{ reason: "proposal", task: "ch1", text: "add ch2" }],
       minutes: DEFAULT_MINUTES,

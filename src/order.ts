@@ -131,6 +131,7 @@ const headShape = {
   title: z.string().min(1),
   context: z.string(),
   planner: ModelSpec,
+  plannerFallback: ModelSpec.optional(),
   decider: ModelSpec.optional(),
   settings: SettingsFile.optional(),
 };
@@ -323,6 +324,7 @@ export function headOf(order: Order): OrderHead {
     context: order.context,
     planner: order.planner,
   };
+  if (order.plannerFallback !== undefined) head.plannerFallback = order.plannerFallback;
   if (order.decider !== undefined) head.decider = order.decider;
   if (order.settings !== undefined) head.settings = order.settings;
   return head;
@@ -330,7 +332,15 @@ export function headOf(order: Order): OrderHead {
 
 /** The order with a new head; the live part and the tasks stay. */
 export function withHead(order: Order, head: OrderHead): Order {
-  const { title: _t, context: _c, planner: _p, decider: _d, settings: _s, ...live } = order;
+  const {
+    title: _t,
+    context: _c,
+    planner: _p,
+    plannerFallback: _f,
+    decider: _d,
+    settings: _s,
+    ...live
+  } = order;
   return { ...head, ...live };
 }
 
@@ -518,7 +528,31 @@ export function textHash(text: string): string {
 export function orderPlugins(order: Order): Set<string> {
   const plugins = new Set([order.planner.plugin, ...order.tasks.map((task) => task.model.plugin)]);
   if (order.decider !== undefined) plugins.add(order.decider.plugin);
+  if (order.plannerFallback !== undefined) plugins.add(order.plannerFallback.plugin);
   return plugins;
+}
+
+/** The model plugin of Claude Code sessions. */
+export const CLAUDE_CODE_PLUGIN = "claude-code";
+
+/**
+ * Who plans when the planner's plugin is limited with no reset in sight: `plannerFallback`, or
+ * else the Claude Code model the order's tasks use most.
+ */
+export function plannerFallbackOf(order: Order): ModelSpec | undefined {
+  if (order.plannerFallback !== undefined) return order.plannerFallback;
+  const counts = new Map<string, { spec: ModelSpec; count: number }>();
+  for (const task of order.tasks) {
+    if (task.model.plugin !== CLAUDE_CODE_PLUGIN) continue;
+    const key = `${task.model.name}/${task.model.effort ?? ""}`;
+    const seen = counts.get(key) ?? { spec: task.model, count: 0 };
+    seen.count += 1;
+    counts.set(key, seen);
+  }
+  let best: { spec: ModelSpec; count: number } | undefined;
+  for (const item of counts.values())
+    if (best === undefined || item.count > best.count) best = item;
+  return best?.spec;
 }
 
 export function modelText(spec: ModelSpec): string {

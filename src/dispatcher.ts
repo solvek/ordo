@@ -13,6 +13,7 @@ import {
   DeciderReply,
   DEFAULT_MINUTES,
   type Minutes,
+  type ModelSpec,
   type Order,
   OrderError,
   PlannerReply,
@@ -32,6 +33,7 @@ import {
   orderProblems,
   parseOrderFile,
   patchState,
+  plannerFallbackOf,
   pendingTasks,
   recoverOrder,
   replySchema,
@@ -146,6 +148,8 @@ interface WorkerRun {
 
 interface MetaRun {
   kind: "planner" | "decider";
+  /** The model it runs as. */
+  spec: ModelSpec;
   session: RunningSession;
   startedAt: number;
   timer: Timer;
@@ -200,6 +204,8 @@ export class Dispatcher {
   private limitSince: number | null = null;
   private limitTimer: Timer | null = null;
   private limitNotified = false;
+  /** Until when the planner runs as its fallback, because its own plugin is limited. */
+  private fallbackUntil: number | null = null;
   private readonly usageNotified = new Set<string>();
   private readonly deciderTried = new Set<string>();
   private readonly questionsNotified = new Set<string>();
@@ -700,10 +706,42 @@ export class Dispatcher {
     this.pump();
   }
 
+  /** The planner, or its fallback while the planner's plugin is limited. */
+  private plannerSpec(): ModelSpec {
+    if (this.fallbackUntil !== null && this.clock.now() < this.fallbackUntil) {
+      const fallback = plannerFallbackOf(this.order);
+      if (fallback !== undefined) return fallback;
+    }
+    this.fallbackUntil = null;
+    return this.order.planner;
+  }
+
+  /**
+   * The planner's plugin is limited. When the reset is unknown or further off than
+   * `minutes.limitRetry`, and a fallback on another plugin exists, plan with it for that long
+   * instead of waiting. Returns whether it did.
+   */
+  private fallBack(spec: ModelSpec, resetsAt: Date | undefined): boolean {
+    const fallback = plannerFallbackOf(this.order);
+    if (fallback === undefined || fallback.plugin === spec.plugin) return false;
+    const now = this.clock.now();
+    const retry = this.minutes.limitRetry * 60_000;
+    const reset = resetsAt?.getTime();
+    if (reset !== undefined && reset > now && reset - now <= retry) return false;
+    this.fallbackUntil = now + retry;
+    this.log.warn("the planner's plugin is limited; the fallback plans", {
+      planner: modelText(spec),
+      fallback: modelText(fallback),
+      until: new Date(this.fallbackUntil).toISOString(),
+    });
+    return true;
+  }
+
   private startPlanner(): void {
     const items = this.order.replan ?? [];
-    const spec = this.order.planner;
+    const spec = this.plannerSpec();
     const prompt = plannerPrompt({
+      runAs: spec,
       order: this.order,
       items,
       minutes: this.minutes,
@@ -716,7 +754,7 @@ export class Dispatcher {
     const session = this.host(spec.plugin).open(
       this.request("planner", "replan", spec.name, spec.effort, prompt, replySchema(PlannerReply)),
     );
-    this.startMeta("planner", session, {
+    this.startMeta("planner", spec, session, {
       consumed: items.length,
       questionIds: [],
     });
@@ -738,16 +776,18 @@ export class Dispatcher {
         replySchema(DeciderReply),
       ),
     );
-    this.startMeta("decider", session, { consumed: 0, questionIds });
+    this.startMeta("decider", spec, session, { consumed: 0, questionIds });
   }
 
   private startMeta(
     kind: MetaRun["kind"],
+    spec: ModelSpec,
     session: RunningSession,
     data: Pick<MetaRun, "consumed" | "questionIds">,
   ): void {
     const meta: MetaRun = {
       kind,
+      spec,
       session,
       startedAt: this.clock.now(),
       settled: false,
@@ -784,6 +824,15 @@ export class Dispatcher {
   private endMeta(meta: MetaRun, end: MetaEnd): void {
     if (meta.settled) return;
     this.settleMeta(meta);
+    if (
+      end.kind === "error" &&
+      end.error instanceof SessionLimitError &&
+      meta.kind === "planner" &&
+      this.fallBack(meta.spec, end.error.resetsAt)
+    ) {
+      this.pump();
+      return;
+    }
     if (end.kind === "error" && end.error instanceof SessionLimitError) {
       this.log.warn(`usage limit cut the ${meta.kind}; it runs again after the wait`);
       this.enterLimit(end.error.resetsAt);

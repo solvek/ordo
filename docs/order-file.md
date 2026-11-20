@@ -6,11 +6,11 @@ YAML. Unknown keys are errors. `ordo check` reports every problem with the file 
 
 The owner writes a new order as one file, `work.yaml`, as below. The first `ordo start` (or `ordo split`) splits it, so that each session reads only what it needs and the owner can edit the order while it runs:
 
-| File                     | Holds                                                                | Who writes it                                                                                  |
-| ------------------------ | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `work.yaml`              | `title`, `context`, `planner`, `decider`, `settings`                 | The owner, at any time. The dispatcher reads it again before it starts a session.              |
-| `work.live.yaml`         | `state`, `replan`, `questions`, and the tasks `pending` or `running` | The dispatcher only. Edit it only after `ordo stop`.                                           |
-| `work.archive/<id>.yaml` | One task that ran (any other status), with its report and `seq`      | The dispatcher, once, when the task finishes. `seq` numbers the tasks in the order they ended. |
+| File                     | Holds                                                                   | Who writes it                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `work.yaml`              | `title`, `context`, `planner`, `plannerFallback`, `decider`, `settings` | The owner, at any time. The dispatcher reads it again before it starts a session.              |
+| `work.live.yaml`         | `state`, `replan`, `questions`, and the tasks `pending` or `running`    | The dispatcher only. Edit it only after `ordo stop`.                                           |
+| `work.archive/<id>.yaml` | One task that ran (any other status), with its report and `seq`         | The dispatcher, once, when the task finishes. `seq` numbers the tasks in the order they ended. |
 
 The split keeps the owner's comments in `work.yaml`. An order in one file is still read by `ordo check`, `ordo status` and `ordo answer`; it is split only by `ordo start`, `ordo run` and `ordo split`. An order file that holds `state` or `tasks` while `work.live.yaml` exists is refused: the live part must be in one place.
 
@@ -21,6 +21,7 @@ title: Translate "The Lighthouse Keeper" # required
 context: | # what every session reads first
   Where the material is, where results go, rules, conventions.
 planner: { plugin: claude-code, name: claude-opus-5-5, effort: medium } # required
+plannerFallback: { plugin: claude-code, name: claude-sonnet-5-5, effort: high } # optional
 decider: { plugin: claude-code, name: claude-opus-5-5, effort: low } # optional
 settings: # optional, every key optional
   pool: 1
@@ -56,22 +57,24 @@ Every task, the planner and the decider name their model as `{plugin, name, effo
 - `name`: the model name the plugin understands, such as `claude-sonnet-5-5` or the id the OpenAI API lists.
 - `effort`: optional, `low`, `medium`, `high`, `xhigh` or `max`. For `openai` this is sent as `reasoning.effort`.
 
+When the planner's plugin hits its usage limit with no reset time, or a reset further off than `minutes.limitRetry`, the dispatcher does not wait: for `minutes.limitRetry` minutes the planner runs as `plannerFallback`, and then the planner is tried again. Without `plannerFallback` the fallback is the `claude-code` model the order's tasks use most. A fallback on the planner's own plugin would hit the same limit, so then the dispatcher waits as before.
+
 The planner names the model of each task it adds. Its prompt lists the models the order already uses and tells it not to give tasks its own model unless asked.
 
 ## Settings
 
-| Key                  | Default   | Meaning                                                                          |
-| -------------------- | --------- | -------------------------------------------------------------------------------- |
-| `pool`               | 1         | Tasks that run at once. `--pool` and `ORDO_POOL` override it.                    |
-| `minutes.tick`       | 10        | The worker is told "minute N of `stop`, keep working" this often, until `wrap`.  |
-| `minutes.remind`     | 30        | First reminder: estimate what is left. Does not interrupt the current tool call. |
-| `minutes.wrap`       | 45        | Finish the current unit of work and hand in.                                     |
-| `minutes.finish`     | 50        | Hand in at once.                                                                 |
-| `minutes.stop`       | 55        | The session is closed; the task becomes `interrupted` (see Continuations).       |
-| `minutes.replan`     | 10        | Time of a planner or decider session.                                            |
-| `minutes.limitRetry` | 30        | Wait after a usage limit with no known reset time.                               |
-| `notify`             | none      | Notifiers; see the README. Secrets come from the environment.                    |
-| `disallowedTools`    | see below | Tools sessions may not use. Replaces the default list.                           |
+| Key                  | Default   | Meaning                                                                                 |
+| -------------------- | --------- | --------------------------------------------------------------------------------------- |
+| `pool`               | 1         | Tasks that run at once. `--pool` and `ORDO_POOL` override it.                           |
+| `minutes.tick`       | 10        | The worker is told "minute N of `stop`, keep working" this often, until `wrap`.         |
+| `minutes.remind`     | 30        | First reminder: estimate what is left. Does not interrupt the current tool call.        |
+| `minutes.wrap`       | 45        | Finish the current unit of work and hand in.                                            |
+| `minutes.finish`     | 50        | Hand in at once.                                                                        |
+| `minutes.stop`       | 55        | The session is closed; the task becomes `interrupted` (see Continuations).              |
+| `minutes.replan`     | 10        | Time of a planner or decider session.                                                   |
+| `minutes.limitRetry` | 30        | Wait after a usage limit with no known reset time; how long the planner fallback plans. |
+| `notify`             | none      | Notifiers; see the README. Secrets come from the environment.                           |
+| `disallowedTools`    | see below | Tools sessions may not use. Replaces the default list.                                  |
 
 `remind < wrap < finish < stop` is required. The dispatcher owns time: the worker is told not to read the clock or judge time by its number of turns, and it stops for time only when one of these reminders arrives. So do not set time limits in the context or in a task ("no more than 45 minutes", "after minute 40 start nothing new"): a worker told so guesses the time and hands in early. Say what to finish when a reminder arrives instead. `ordo check` warns about a number with a unit of time (English or Ukrainian) in the context or an open task, and about a state larger than 10 KB. The default `disallowedTools` are `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup`, `RemoteTrigger`, `PushNotification`, `Monitor`, `EnterWorktree`, `ExitWorktree`.
 

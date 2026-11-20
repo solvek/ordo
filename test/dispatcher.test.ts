@@ -9,6 +9,7 @@ import { readStored } from "../src/store.ts";
 import {
   BIG,
   SMALL,
+  ScriptedHost,
   cleanTemp,
   done,
   flush,
@@ -361,6 +362,66 @@ describe("dispatcher: usage limit", () => {
     await h.clock.advanceMinutes(30);
     expect(h.host.lastOpen().request.role).toBe("planner");
     expect(h.host.lastOpen().request.prompt).toContain("add ch3");
+  });
+
+  it("plans with Claude when the planner's plugin is limited with no reset time", async () => {
+    const claude = new ScriptedHost();
+    const file = tempOrder(
+      orderText(`${task("ch1")}${task("ch2")}${task("ch3")}`)
+        .replace(
+          "planner: { plugin: test, name: big-model, effort: medium }",
+          "planner: { plugin: test, name: big-model }",
+        )
+        .replaceAll(SMALL, "{ plugin: claude-code, name: claude-sonnet-5-5, effort: high }"),
+    );
+    const openai = new ScriptedHost();
+    const h = await started(file, { hosts: { test: openai, "claude-code": claude } });
+    claude.answer(done("Translated.", { proposal: "add ch3" }));
+    await flush();
+    openai.refuse(new SessionLimitError(undefined));
+    await flush();
+    const fallback = claude.lastOpen().request;
+    expect(fallback.role).toBe("planner");
+    expect(fallback.model).toBe("claude-sonnet-5-5");
+    expect(fallback.effort).toBe("high");
+    expect(fallback.prompt).toContain("You run as claude-sonnet-5-5 (high) via claude-code");
+    expect(fallback.prompt).toContain("add ch3");
+    expect(h.dispatcher.status().mode).toBe("replanning");
+    claude.answer({});
+    await flush();
+    // The next replan within limitRetry goes to the fallback too, then back to the planner.
+    claude.answer(done("Translated.", { proposal: "add ch4" }));
+    await flush();
+    expect(claude.lastOpen().request.role).toBe("planner");
+    claude.answer({});
+    await flush();
+    await h.clock.advanceMinutes(31);
+    claude.answer(done("Translated.", { proposal: "add ch5" }));
+    await flush();
+    expect(openai.lastOpen().request.role).toBe("planner");
+    expect(h.notifier.notices).toEqual([]);
+  });
+
+  it("names its planner fallback, and waits when the reset is near", async () => {
+    const other = new ScriptedHost();
+    const file = tempOrder(
+      orderText(
+        `${task("ch1")}${task("ch2")}`,
+        "plannerFallback: { plugin: other, name: spare }\n",
+      ),
+    );
+    const host = new ScriptedHost();
+    const h = await started(file, { hosts: { test: host, other } });
+    host.answer(done("Translated.", { proposal: "add ch3" }));
+    await flush();
+    host.refuse(new SessionLimitError(new Date(h.clock.now() + 5 * 60_000)));
+    await flush();
+    expect(h.dispatcher.status().mode).toBe("waiting-limit");
+    expect(other.sessions).toHaveLength(0);
+    await h.clock.advanceMinutes(6);
+    host.refuse(new SessionLimitError(new Date(h.clock.now() + 5 * 60 * 60_000)));
+    await flush();
+    expect(other.lastOpen().request.model).toBe("spare");
   });
 
   it("warns the owner once when the weekly window is nearly used up", async () => {

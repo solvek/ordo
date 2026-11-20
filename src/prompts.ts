@@ -2,6 +2,7 @@
 import { stringify } from "yaml";
 import {
   type Minutes,
+  type ModelSpec,
   type Order,
   type Question,
   type ReplanItem,
@@ -170,6 +171,8 @@ function reasonText(order: Order, item: ReplanItem): string {
 
 export interface PlannerPromptInput {
   order: Order;
+  /** The model the planner runs as: the order's planner, or its fallback. */
+  runAs: ModelSpec;
   items: readonly ReplanItem[];
   minutes: Minutes;
   pool: number;
@@ -212,7 +215,7 @@ export function plannerPrompt(input: PlannerPromptInput): string {
     "",
     "Each task names its model as {plugin, name, effort}. Models the order uses so far:",
     models === "" ? "(none)" : models,
-    `You run as ${modelText(order.planner)}. Do not give tasks this model unless the reason below asks for it explicitly; prefer the cheapest model that can do the task. A task that needs no tools may use a plugin without them, when the order uses one.`,
+    `You run as ${modelText(input.runAs)}. Do not give tasks this model unless the reason below asks for it explicitly; prefer the cheapest model that can do the task. A task that needs no tools may use a plugin without them, when the order uses one.`,
     "",
     "Why you are called:",
     items.map((item) => reasonText(order, item)).join("\n\n"),
