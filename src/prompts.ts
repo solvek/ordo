@@ -9,6 +9,11 @@ import {
   modelText,
 } from "./order.ts";
 
+export function tickText(minute: number, minutes: Minutes): string {
+  const plan = minute < minutes.remind ? "" : ` Plan to hand in by minute ${String(minutes.wrap)}.`;
+  return `Dispatcher clock: minute ${String(minute)} of ${String(minutes.stop)}. Keep working.${plan} The dispatcher will tell you when to wrap up.`;
+}
+
 export function remindText(minutes: Minutes): string {
   return `Reminder from the dispatcher: ${String(minutes.remind)} minutes have passed. Estimate what is left and do not start work you cannot hand in by minute ${String(minutes.wrap)}.`;
 }
@@ -132,6 +137,7 @@ export function workerPrompt(input: WorkerPromptInput): string {
     "",
     "Rules:",
     "- When you hand in the report the session ends, and nothing may keep running in the background. If you have to wait for something, wait with one blocking command.",
+    `- The dispatcher keeps the time. Every ${String(minutes.tick)} minutes it writes "minute N of ${String(minutes.stop)}" into this session: that is your only clock. Do not judge time by the number of turns or tool calls; a long session of many steps is normal.`,
     "- Do not check the clock and do not stop because you think time is up. A note that says time ran out is not a clock. A minute named in the task is a limit the dispatcher enforces, not one you measure. Until a reminder arrives, keep working.",
     "- The dispatcher sends time reminders as separate messages. Stop for time only in reply to one of them.",
     `- When the reminder says minute ${String(minutes.remind)}, estimate what is left and do not start work you cannot hand in by minute ${String(minutes.wrap)}.`,

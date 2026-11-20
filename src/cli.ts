@@ -12,7 +12,7 @@ import { Dispatcher, type RunResult } from "./dispatcher.ts";
 import { acquireLock, lockHolder, orderPaths } from "./files.ts";
 import { createLogger, parseLevel, prettyLine } from "./logger.ts";
 import { createNotifiers, telegramChats } from "./notify.ts";
-import { OrderError, answerQuestion, orderPlugins, textHash } from "./order.ts";
+import { OrderError, answerQuestion, orderPlugins, orderWarnings, textHash } from "./order.ts";
 import { type SessionHost } from "./session.ts";
 import { type StatusReport, fileStatus, formatStatus } from "./status.ts";
 import { liveHashNow, readStored, splitOrder, writeSingle, writeStored } from "./store.ts";
@@ -395,6 +395,10 @@ async function check(file: string): Promise<number> {
       ? "  layout: one file; ordo start (or ordo split) moves the live part out\n"
       : `  live: ${paths.live}\n  archive: ${paths.archive}\n`,
   );
+  const warnings = orderWarnings(order);
+  if (warnings.length > 0) {
+    process.stderr.write(`${warnings.map((text) => `warning: ${text}`).join("\n")}\n`);
+  }
   if (problems.length > 0) {
     process.stderr.write(`${problems.join("\n")}\n`);
     return 1;

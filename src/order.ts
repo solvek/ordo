@@ -47,6 +47,7 @@ export const ModelSpec = z.strictObject({
 export type ModelSpec = z.infer<typeof ModelSpec>;
 
 const Minutes = z.strictObject({
+  tick: z.number().positive().optional(),
   remind: z.number().positive().optional(),
   wrap: z.number().positive().optional(),
   finish: z.number().positive().optional(),
@@ -422,6 +423,8 @@ function findCycle(tasks: readonly Task[]): string[] | null {
 }
 
 export interface Minutes {
+  /** The worker is told the minute this often, until `wrap`. */
+  tick: number;
   remind: number;
   wrap: number;
   finish: number;
@@ -431,6 +434,7 @@ export interface Minutes {
 }
 
 export const DEFAULT_MINUTES: Minutes = {
+  tick: 10,
   remind: 30,
   wrap: 45,
   finish: 50,
@@ -442,6 +446,7 @@ export const DEFAULT_MINUTES: Minutes = {
 export function minutesOf(settings: SettingsFile | undefined): Minutes {
   const given = settings?.minutes ?? {};
   return {
+    tick: given.tick ?? DEFAULT_MINUTES.tick,
     remind: given.remind ?? DEFAULT_MINUTES.remind,
     wrap: given.wrap ?? DEFAULT_MINUTES.wrap,
     finish: given.finish ?? DEFAULT_MINUTES.finish,
@@ -449,6 +454,55 @@ export function minutesOf(settings: SettingsFile | undefined): Minutes {
     replan: given.replan ?? DEFAULT_MINUTES.replan,
     limitRetry: given.limitRetry ?? DEFAULT_MINUTES.limitRetry,
   };
+}
+
+/** Minutes at which the worker is told the time, other than the reminders. */
+export function tickMinutes(minutes: Minutes): number[] {
+  const ticks: number[] = [];
+  for (let minute = minutes.tick; minute < minutes.wrap; minute += minutes.tick) {
+    if (minute !== minutes.remind) ticks.push(minute);
+  }
+  return ticks;
+}
+
+/** Text that sets a time limit: a number with a unit of time, in English or Ukrainian. */
+const TIME_LIMIT = [
+  /\b\d+(?:st|nd|rd|th)?\s*-?\s*(?:minutes?|mins?|hours?|hrs?)\b/i,
+  /\b(?:minute|hour)\s+\d+/i,
+  /\d+\s*(?:-\s*\p{L}{1,3}\s*)?(?:хв\p{L}*|годин\p{L}*)/iu,
+  /(?:хвилин\p{L}*|годин\p{L}*)\s+\d+/iu,
+];
+
+/** A state larger than this is worth a warning: every prompt carries it. */
+const STATE_WARN_BYTES = 10 * 1024;
+
+/**
+ * What is valid but likely to cost: a context or a task that sets a time limit (the worker then
+ * judges time by itself and hands in early), and a large state.
+ */
+export function orderWarnings(order: Order): string[] {
+  const warnings: string[] = [];
+  const timeLimit = (where: string, text: string): void => {
+    for (const pattern of TIME_LIMIT) {
+      const found = pattern.exec(text);
+      if (found === null) continue;
+      warnings.push(
+        `${where}: "${found[0]}" looks like a time limit. The dispatcher keeps time and sends reminders; say what to finish when one arrives instead.`,
+      );
+      return;
+    }
+  };
+  timeLimit("context", order.context);
+  for (const task of order.tasks) {
+    if (!isFinished(task)) timeLimit(`tasks.${task.id}.prompt`, task.prompt);
+  }
+  const stateBytes = Buffer.byteLength(stringify(order.state, { lineWidth: 0 }));
+  if (stateBytes > STATE_WARN_BYTES) {
+    warnings.push(
+      `state: ${String(Math.round(stateBytes / 1024))} KB goes into every prompt. Keep bulky data in files the context names.`,
+    );
+  }
+  return warnings;
 }
 
 /** YAML text of an order, with a trailing newline. Long lines are not folded. */

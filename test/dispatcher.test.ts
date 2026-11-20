@@ -226,17 +226,31 @@ describe("dispatcher: time", () => {
     const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
     const h = await started(file);
     const worker = h.host.lastOpen();
-    await h.clock.advanceMinutes(30);
-    expect(worker.sent).toHaveLength(1);
-    expect(worker.sent[0]?.priority).toBe("next");
-    expect(worker.sent[0]?.text).toContain("30 minutes have passed");
-    expect(worker.sent[0]?.text).toContain("minute 45");
-    await h.clock.advanceMinutes(15);
-    expect(worker.sent[1]).toMatchObject({ priority: "now" });
-    expect(worker.sent[1]?.text).toContain("45 minutes have passed");
+    expect(worker.request.prompt).toContain('Every 10 minutes it writes "minute N of 55"');
+    await h.clock.advanceMinutes(10);
+    expect(worker.sent).toEqual([
+      {
+        priority: "next",
+        text: "Dispatcher clock: minute 10 of 55. Keep working. The dispatcher will tell you when to wrap up.",
+      },
+    ]);
+    await h.clock.advanceMinutes(20);
+    expect(worker.sent).toHaveLength(3);
+    expect(worker.sent[1]?.text).toContain("minute 20 of 55");
+    expect(worker.sent[2]?.priority).toBe("next");
+    expect(worker.sent[2]?.text).toContain("30 minutes have passed");
+    expect(worker.sent[2]?.text).toContain("minute 45");
+    await h.clock.advanceMinutes(10);
+    expect(worker.sent[3]?.text).toContain(
+      "minute 40 of 55. Keep working. Plan to hand in by minute 45.",
+    );
     await h.clock.advanceMinutes(5);
-    expect(worker.sent[2]?.text).toContain("50 minutes have passed");
-    expect(worker.sent[2]?.text).toContain("closed at minute 55");
+    expect(worker.sent[4]).toMatchObject({ priority: "now" });
+    expect(worker.sent[4]?.text).toContain("45 minutes have passed");
+    await h.clock.advanceMinutes(5);
+    expect(worker.sent).toHaveLength(6);
+    expect(worker.sent[5]?.text).toContain("50 minutes have passed");
+    expect(worker.sent[5]?.text).toContain("closed at minute 55");
     await h.clock.advanceMinutes(5);
     expect(worker.closed).toBe(true);
     const order = saved(file);
@@ -259,7 +273,9 @@ describe("dispatcher: time", () => {
     );
     expect(worker.request.prompt).toContain("minute 20");
     await h.clock.advanceMinutes(10);
-    expect(worker.sent[0]?.text).toContain("10 minutes have passed");
+    expect(worker.sent.map((item) => item.text)).toEqual([
+      expect.stringContaining("10 minutes have passed"),
+    ]);
     await h.clock.advanceMinutes(18);
     expect(saved(file).tasks[0]?.report?.summary).toContain("minute 28");
   });

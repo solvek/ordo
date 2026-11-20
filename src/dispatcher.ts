@@ -36,6 +36,7 @@ import {
   replySchema,
   runnableTasks,
   textHash,
+  tickMinutes,
   updateTask,
   withHead,
   withReplan,
@@ -48,6 +49,7 @@ import {
   finishText,
   plannerPrompt,
   remindText,
+  tickText,
   timeoutSummary,
   workerPrompt,
   wrapText,
@@ -570,6 +572,14 @@ export class Dispatcher {
       this.log.info("time reminder", { task: task.id, at: label });
       session.send(text, priority);
     };
+    for (const at of tickMinutes(this.minutes)) {
+      run.timers.push(
+        this.clock.delay(
+          at * minute,
+          send(tickText(at, this.minutes), "next", `tick ${String(at)}`),
+        ),
+      );
+    }
     run.timers.push(
       this.clock.delay(
         this.minutes.remind * minute,

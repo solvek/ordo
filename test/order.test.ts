@@ -1,16 +1,19 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { limitWatch } from "../src/limit.ts";
 import {
+  DEFAULT_MINUTES,
   type Order,
   answerQuestion,
   applyPlan,
   formatOrder,
   mergePatch,
   minutesOf,
+  orderWarnings,
   parseOrder,
   recoverOrder,
   runnableTasks,
   stateDiff,
+  tickMinutes,
 } from "../src/order.ts";
 import { SessionLimitError } from "../src/session.ts";
 import { SMALL, cleanTemp, orderText, task } from "./helpers.ts";
@@ -94,6 +97,7 @@ questions:
     ).toThrow(/remind < wrap < finish < stop/);
     const order = parseOrder(orderText(task("ch1"), "settings:\n  minutes: { stop: 58 }\n"));
     expect(minutesOf(order.settings)).toEqual({
+      tick: 10,
       remind: 30,
       wrap: 45,
       finish: 50,
@@ -101,6 +105,43 @@ questions:
       replan: 10,
       limitRetry: 30,
     });
+  });
+});
+
+describe("time", () => {
+  it("tells the minute every tick until wrap, except at the reminder", () => {
+    expect(tickMinutes(DEFAULT_MINUTES)).toEqual([10, 20, 40]);
+    expect(tickMinutes({ ...DEFAULT_MINUTES, tick: 15 })).toEqual([15]);
+    expect(tickMinutes({ ...DEFAULT_MINUTES, tick: 60 })).toEqual([]);
+  });
+
+  it("warns about time limits in the context and the open tasks, and a large state", () => {
+    const order = parseOrder(
+      orderText(
+        `${task("a", "    status: done\n")}${task("b")}${task("c")}${task("d")}${task("e")}`,
+      ),
+    );
+    const prompts: Record<string, string> = {
+      a: "Stop after 40 minutes.",
+      b: "Не більше 45 хвилин, після 40-ї хвилини нового скана не починай.",
+      c: "Hand in at minute 40.",
+      d: "Read 12 pages; a 3-page letter counts as one.",
+      e: "Wrap up within a 30-minute session.",
+    };
+    const warned = orderWarnings({
+      ...order,
+      context: "Each document takes about 5 хв to read.",
+      state: { big: "x".repeat(11 * 1024) },
+      tasks: order.tasks.map((item) => ({ ...item, prompt: prompts[item.id] ?? "" })),
+    });
+    expect(warned).toEqual([
+      expect.stringMatching(/^context: "5 хв" looks like a time limit/),
+      expect.stringMatching(/^tasks\.b\.prompt: "45 хвилин"/),
+      expect.stringMatching(/^tasks\.c\.prompt: "minute 40"/),
+      expect.stringMatching(/^tasks\.e\.prompt: "30-minute"/),
+      expect.stringMatching(/^state: 11 KB goes into every prompt/),
+    ]);
+    expect(orderWarnings(parseOrder(orderText(task("a"))))).toEqual([]);
   });
 });
 
