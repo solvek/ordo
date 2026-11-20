@@ -4,7 +4,7 @@
 // started again continues from them. The owner may edit the order file while it runs; the
 // dispatcher reads it again before it starts a session.
 import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { type ControlRequest, type ControlResponse } from "./control.ts";
 import { type OrderPaths, acquireLock, orderPaths, readOrderText } from "./files.ts";
 import { type Log, silentLog } from "./logger.ts";
@@ -41,6 +41,7 @@ import {
   withReplan,
 } from "./order.ts";
 import {
+  type OrderFilesShown,
   PAUSE_TEXT,
   STOP_SUMMARY,
   deciderPrompt,
@@ -545,6 +546,7 @@ export class Dispatcher {
       minutes: this.minutes,
       pool: this.pool,
       running,
+      files: this.filesShown(),
     });
     this.order = updateTask(this.order, task.id, (item) => {
       const { report: _old, ...rest } = item;
@@ -690,6 +692,7 @@ export class Dispatcher {
       items,
       minutes: this.minutes,
       pool: this.pool,
+      files: this.filesShown(),
     });
     this.log.info("replan started", {
       reasons: items.map((item) => `${item.reason}:${item.task}`),
@@ -975,6 +978,15 @@ export class Dispatcher {
   private save(): void {
     if (liveHashNow(this.paths) !== this.liveHash) throw new ConflictError();
     this.liveHash = writeStored(this.paths, this.order, this.archived);
+  }
+
+  /** Paths of the live file and the archive as sessions see them: relative to their directory. */
+  private filesShown(): OrderFilesShown {
+    const shown = (path: string): string => {
+      const rel = relative(this.options.cwd, path);
+      return rel === "" || rel.startsWith("..") || isAbsolute(rel) ? path : rel;
+    };
+    return { live: shown(this.paths.live), archive: shown(this.paths.archive) };
   }
 
   private missingPlugins(): string[] {

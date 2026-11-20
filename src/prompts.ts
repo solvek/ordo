@@ -53,6 +53,28 @@ function taskBlock(task: Task, withPrompt: boolean): string {
   return lines.join("\n");
 }
 
+/** Where sessions find the parts of the order they are not given, as they should see the paths. */
+export interface OrderFilesShown {
+  live: string;
+  archive: string;
+}
+
+/** One line per task: id, status when asked, title, and what it waits for. */
+function indexLine(task: Task, withStatus: boolean): string {
+  const after =
+    task.after === undefined || task.after.length === 0 ? "" : ` (after ${task.after.join(", ")})`;
+  return `- ${task.id}${withStatus ? ` ${task.status}` : ""}: ${task.title}${after}`;
+}
+
+/** A task that ran, whole: what it was asked and everything it reported. */
+function ranBlock(task: Task): string {
+  const { id, title, status, prompt, report } = task;
+  return stringify(
+    { [id]: { title, status, prompt, ...(report === undefined ? {} : { report }) } },
+    { lineWidth: 0 },
+  ).trimEnd();
+}
+
 export interface WorkerPromptInput {
   order: Order;
   task: Task;
@@ -60,15 +82,16 @@ export interface WorkerPromptInput {
   pool: number;
   /** Tasks other workers are running right now. */
   running: readonly Task[];
+  files: OrderFilesShown;
 }
 
 /** Opening message of a worker session. */
 export function workerPrompt(input: WorkerPromptInput): string {
-  const { order, task, minutes } = input;
+  const { order, task, minutes, files } = input;
   const backlog = order.tasks.filter((item) => item.status === "pending" && item.id !== task.id);
   const lines = [
     "You are a worker of Ordo, a dispatcher that runs a long piece of work as short sessions.",
-    "You do one task of a work order. Do not edit the order file: the dispatcher keeps it.",
+    "You do one task of a work order. Do not edit the order's files (the order, its live file, its archive): the dispatcher keeps them.",
     "Save your results where the task and the context say. Hand the dispatcher only the report the session schema asks for.",
     "",
     `Order: ${order.title}`,
@@ -82,8 +105,10 @@ export function workerPrompt(input: WorkerPromptInput): string {
     `Your task: ${task.id}. ${task.title}`,
     block(task.prompt),
     "",
-    "Backlog: tasks not started yet. Do not do them; propose changes to them in proposal.",
-    backlog.length === 0 ? "(empty)" : backlog.map((item) => taskBlock(item, true)).join("\n"),
+    `Backlog: tasks not started yet. Do not do them; propose changes to them in proposal. Their prompts are in ${files.live}.`,
+    backlog.length === 0 ? "(empty)" : backlog.map((item) => indexLine(item, false)).join("\n"),
+    "",
+    `Tasks that ran are in ${files.archive}/<id>.yaml, each with its prompt and report. Open one only when your task needs it.`,
   ];
   if (input.pool > 1) {
     lines.push(
@@ -142,12 +167,16 @@ export interface PlannerPromptInput {
   items: readonly ReplanItem[];
   minutes: Minutes;
   pool: number;
+  files: OrderFilesShown;
 }
 
 /** Opening message of a planner session. It rewrites the backlog and the state, nothing that ran. */
 export function plannerPrompt(input: PlannerPromptInput): string {
-  const { order, items, minutes } = input;
+  const { order, items, minutes, files } = input;
   const ran = order.tasks.filter((task) => task.status !== "pending" && task.status !== "running");
+  const named = [...new Set(items.map((item) => item.task))]
+    .map((id) => ran.find((task) => task.id === id))
+    .filter((task) => task !== undefined);
   const running = order.tasks.filter((task) => task.status === "running");
   const backlog = order.tasks.filter((task) => task.status === "pending");
   const seen = new Map<string, string>();
@@ -158,19 +187,6 @@ export function plannerPrompt(input: PlannerPromptInput): string {
     );
   }
   const models = [...seen.values()].map((text) => `- ${text}`).join("\n");
-  const ranText =
-    ran.length === 0
-      ? "(none)"
-      : ran
-          .map((task) => {
-            const report = task.report;
-            const note =
-              report?.note === undefined || report.note.trim() === ""
-                ? ""
-                : `\n  note: ${report.note}`;
-            return `- ${task.id} ${task.status}: ${task.title}\n  summary: ${report?.summary ?? ""}\n  proposal: ${report?.proposal ?? ""}${note}`;
-          })
-          .join("\n");
   const lines = [
     "You are the planner of a work order run by Ordo. You patch the backlog: the tasks not started yet.",
     "Do not edit the order file or any other file. You may read files to see what workers left. The dispatcher writes your reply into the order.",
@@ -195,6 +211,9 @@ export function plannerPrompt(input: PlannerPromptInput): string {
     "Why you are called:",
     items.map((item) => reasonText(order, item)).join("\n\n"),
     "",
+    ...(named.length === 0
+      ? []
+      : ["The tasks named above, as they ran:", named.map(ranBlock).join("\n"), ""]),
     `Order: ${order.title}`,
     "",
     "Context:",
@@ -203,8 +222,8 @@ export function plannerPrompt(input: PlannerPromptInput): string {
     "State:",
     stateText(order),
     "",
-    "Tasks that ran:",
-    ranText,
+    `Tasks that ran, in the order they ended. Each is in ${files.archive}/<id>.yaml with its prompt and full report; read one when you need it.`,
+    ran.length === 0 ? "(none)" : ran.map((task) => indexLine(task, true)).join("\n"),
     "",
     "Running now (keep away from their work):",
     running.length === 0

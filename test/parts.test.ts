@@ -15,10 +15,16 @@ import { cleanTemp, orderText, task, tempDir, tempOrder } from "./helpers.ts";
 
 afterEach(cleanTemp);
 
+const FILES = { live: "w.live.yaml", archive: "w.archive" };
+
 describe("workerPrompt", () => {
-  it("forbids editing the order, shows the backlog and the report fields", () => {
-    const order = parseOrder(orderText(`${task("ch1")}${task("ch2", "    after: [ch1]\n")}`));
-    const [first] = order.tasks;
+  it("forbids editing the order, shows the backlog by title and the report fields", () => {
+    const order = parseOrder(
+      orderText(
+        `${task("ch0", "    status: done\n    report: { summary: Old news., proposal: '' }\n")}${task("ch1")}${task("ch2", "    after: [ch1]\n")}`,
+      ),
+    );
+    const first = order.tasks[1];
     if (first === undefined) throw new Error("no task");
     const text = workerPrompt({
       order,
@@ -26,11 +32,16 @@ describe("workerPrompt", () => {
       minutes: DEFAULT_MINUTES,
       pool: 1,
       running: [],
+      files: FILES,
     });
-    expect(text).toContain("Do not edit the order file");
+    expect(text).toContain("Do not edit the order's files");
     expect(text).toContain("Your task: ch1. Translate ch1");
-    expect(text).toContain("- id: ch2");
-    expect(text).toContain("after: [ch1]");
+    expect(text).toContain("Translate ch1 of the fictional book.");
+    expect(text).toContain("- ch2: Translate ch2 (after ch1)");
+    expect(text).not.toContain("Translate ch2 of the fictional book.");
+    expect(text).toContain("Their prompts are in w.live.yaml");
+    expect(text).toContain("Tasks that ran are in w.archive/<id>.yaml");
+    expect(text).not.toContain("Old news.");
     expect(text).toContain("statePatch");
     expect(text).toContain("note");
     expect(text).toContain("nothing may keep running in the background");
@@ -42,7 +53,10 @@ describe("workerPrompt", () => {
   it("tells the planner why it is called and which model it is", () => {
     const order = parseOrder(
       orderText(
-        task("ch1", "    status: done\n    report: { summary: Done well., proposal: add ch2 }\n"),
+        `${task("ch0", "    status: done\n    report: { summary: Old news., proposal: '' }\n")}${task(
+          "ch1",
+          "    status: done\n    report: { summary: Done well., proposal: add ch2, note: Mind the names. }\n",
+        )}${task("ch3")}`,
       ),
     );
     const text = plannerPrompt({
@@ -50,6 +64,7 @@ describe("workerPrompt", () => {
       items: [{ reason: "proposal", task: "ch1", text: "add ch2" }],
       minutes: DEFAULT_MINUTES,
       pool: 3,
+      files: FILES,
     });
     expect(text).toContain("Task ch1 (Translate ch1) is done. Its worker proposes:\nadd ch2");
     expect(text).toContain("You run as big-model (medium) via test");
@@ -57,7 +72,16 @@ describe("workerPrompt", () => {
     expect(text).toContain("Up to 3 tasks run at the same time");
     expect(text).toContain("upsert");
     expect(text).toContain("never becomes done");
+    // The task named in the reason, in full.
+    expect(text).toContain("ch1:\n  title: Translate ch1\n  status: done\n  prompt: Translate ch1");
     expect(text).toContain("summary: Done well.");
+    expect(text).toContain("note: Mind the names.");
+    // The others, one line each, with where to read more.
+    expect(text).toContain("- ch0 done: Translate ch0\n- ch1 done: Translate ch1");
+    expect(text).not.toContain("Old news.");
+    expect(text).toContain("Each is in w.archive/<id>.yaml");
+    // The backlog in full.
+    expect(text).toContain("prompt: Translate ch3 of the fictional book.");
   });
 });
 

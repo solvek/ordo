@@ -38,6 +38,16 @@ tasks:
       What to do and what to hand in.
 ```
 
+## What each session reads
+
+| Session | Its prompt holds                                                                                                                                                                                                                                                       |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worker  | The context, the state, its own task, and the backlog as one line per task (id, title, `after`). It is told where the live file and the archive are, and may open them.                                                                                                |
+| Planner | Why it is called, with the tasks named in the reasons in full (prompt and report); the context and the state; the tasks that ran as one line each (id, status, title) with the archive path where it may read any of them; the tasks running now; the backlog in full. |
+| Decider | The context, the state, and the questions with the summary of the worker that asked them.                                                                                                                                                                              |
+
+The context and the state go into every prompt. Keep them short; put bulky data in files the context names.
+
 ## Models
 
 Every task, the planner and the decider name their model as `{plugin, name, effort}`:
