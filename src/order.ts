@@ -1,5 +1,8 @@
-// The order file: context, models of the planner and the decider, settings, state, tasks and the owner's questions.
-// While a dispatcher runs it is the only writer of the file; the planner patches the backlog.
+// An order: context, models of the planner and the decider, settings, state, tasks and the
+// owner's questions. It is kept in three places. The order file holds what the owner writes and
+// may edit at any time (title, context, models, settings). The live file holds what the
+// dispatcher writes (state, backlog, questions, owed replans). Each task that ran is moved to its
+// own file in the archive. An order not started yet may be one file; the dispatcher splits it.
 import { createHash } from "node:crypto";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
@@ -78,16 +81,32 @@ const Report = z.strictObject({
 });
 export type TaskReport = z.infer<typeof Report>;
 
-const TaskFile = z.strictObject({
-  id: z.string().min(1),
+/** A task id names its archive file, so it is a plain word. */
+const TaskId = z
+  .string()
+  .regex(
+    /^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u,
+    "use letters, digits, '.', '_' and '-', starting with a letter or digit",
+  );
+
+const taskShape = {
+  id: TaskId,
   title: z.string().min(1),
   model: ModelSpec,
   after: z.array(z.string().min(1)).optional(),
   prompt: z.string().min(1),
   status: Status.default("pending"),
   report: Report.optional(),
-});
+};
+const TaskFile = z.strictObject(taskShape);
 export type Task = z.infer<typeof TaskFile>;
+
+/** A task that ran, in its archive file. `seq` keeps the order in which tasks were archived. */
+const ArchivedFile = z.strictObject({ ...taskShape, seq: z.number().int().positive() });
+export interface ArchivedTask {
+  seq: number;
+  task: Task;
+}
 
 const Question = z.strictObject({
   id: z.string().min(1),
@@ -107,17 +126,27 @@ const ReplanItem = z.strictObject({
 });
 export type ReplanItem = z.infer<typeof ReplanItem>;
 
-const OrderFile = z.strictObject({
+const headShape = {
   title: z.string().min(1),
   context: z.string(),
   planner: ModelSpec,
   decider: ModelSpec.optional(),
   settings: SettingsFile.optional(),
+};
+const liveShape = {
   state: State,
   replan: z.array(ReplanItem).optional(),
   questions: z.array(Question).optional(),
   tasks: z.array(TaskFile),
-});
+};
+/** Keys of the live part. An order file with any of them is an order in one file. */
+export const LIVE_KEYS = ["state", "replan", "questions", "tasks"] as const;
+
+const HeadFile = z.strictObject(headShape);
+export type OrderHead = z.infer<typeof HeadFile>;
+const LiveFile = z.strictObject(liveShape);
+export type OrderLive = z.infer<typeof LiveFile>;
+const OrderFile = z.strictObject({ ...headShape, ...liveShape });
 export type Order = z.infer<typeof OrderFile>;
 
 /** What a worker hands in. `statePatch` is a JSON Merge Patch over the order state. */
@@ -219,19 +248,113 @@ function issueText(error: z.ZodError): string[] {
   });
 }
 
-/** Parse an order. Throws {@link OrderError} naming every problem. */
-export function parseOrder(text: string): Order {
-  let raw: unknown;
+function yamlValue(text: string): unknown {
   try {
-    raw = parse(text);
+    const value: unknown = parse(text);
+    return value;
   } catch (error: unknown) {
     throw new OrderError(`not YAML: ${error instanceof Error ? error.message : "parse error"}`);
   }
-  const parsed = OrderFile.safeParse(raw);
+}
+
+function checked<T>(schema: z.ZodType<T>, raw: unknown): T {
+  const parsed = schema.safeParse(raw);
   if (!parsed.success) throw new OrderError(issueText(parsed.error).join("\n"));
-  const problems = orderProblems(parsed.data);
-  if (problems.length > 0) throw new OrderError(problems.join("\n"));
   return parsed.data;
+}
+
+/** Parse an order kept in one file. Throws {@link OrderError} naming every problem. */
+export function parseOrder(text: string): Order {
+  const order = checked(OrderFile, yamlValue(text));
+  const problems = orderProblems(order);
+  if (problems.length > 0) throw new OrderError(problems.join("\n"));
+  return order;
+}
+
+/**
+ * Parse the order file. `live` is set when the file still holds the live part too: an order not
+ * started yet, or one written by an Ordo that kept everything in one file.
+ */
+export function parseOrderFile(text: string): { head: OrderHead; live: OrderLive | null } {
+  const raw = yamlValue(text);
+  if (isRecord(raw) && LIVE_KEYS.some((key) => key in raw)) {
+    const order = checked(OrderFile, raw);
+    return { head: headOf(order), live: liveOf(order, true) };
+  }
+  return { head: checked(HeadFile, raw), live: null };
+}
+
+export function parseLive(text: string): OrderLive {
+  return checked(LiveFile, yamlValue(text));
+}
+
+export function parseArchived(text: string): ArchivedTask {
+  const { seq, ...task } = checked(ArchivedFile, yamlValue(text));
+  return { seq, task };
+}
+
+/**
+ * The whole order from its parts: archived tasks first, in archive order, then the live tasks.
+ * A live task that is archived too was archived just before a crash; the archive wins.
+ */
+export function joinOrder(
+  head: OrderHead,
+  live: OrderLive,
+  archived: readonly ArchivedTask[],
+): Order {
+  const ran = [...archived].sort((a, b) => a.seq - b.seq).map((item) => item.task);
+  const ranIds = new Set(ran.map((task) => task.id));
+  const order: Order = {
+    ...head,
+    state: live.state,
+    ...(live.replan === undefined ? {} : { replan: live.replan }),
+    ...(live.questions === undefined ? {} : { questions: live.questions }),
+    tasks: [...ran, ...live.tasks.filter((task) => !ranIds.has(task.id))],
+  };
+  const problems = orderProblems(order);
+  if (problems.length > 0) throw new OrderError(problems.join("\n"));
+  return order;
+}
+
+export function headOf(order: Order): OrderHead {
+  const head: OrderHead = {
+    title: order.title,
+    context: order.context,
+    planner: order.planner,
+  };
+  if (order.decider !== undefined) head.decider = order.decider;
+  if (order.settings !== undefined) head.settings = order.settings;
+  return head;
+}
+
+/** The order with a new head; the live part and the tasks stay. */
+export function withHead(order: Order, head: OrderHead): Order {
+  const { title: _t, context: _c, planner: _p, decider: _d, settings: _s, ...live } = order;
+  return { ...head, ...live };
+}
+
+/** A task is archived once it ran: every status but pending and running. */
+export function isFinished(task: Task): boolean {
+  return task.status !== "pending" && task.status !== "running";
+}
+
+/** The live part. Without `all`, only the tasks that have not finished. */
+export function liveOf(order: Order, all = false): OrderLive {
+  const live: OrderLive = {
+    state: order.state,
+    tasks: all ? order.tasks : order.tasks.filter((task) => !isFinished(task)),
+  };
+  if (order.replan !== undefined) live.replan = order.replan;
+  if (order.questions !== undefined) live.questions = order.questions;
+  return live;
+}
+
+export function formatLive(order: Order): string {
+  return stringify(liveOf(order), { lineWidth: 0 });
+}
+
+export function formatArchived(task: Task, seq: number): string {
+  return stringify({ ...task, seq }, { lineWidth: 0 });
 }
 
 /** Problems a schema cannot see: names that point nowhere, repeated ids, cycles. */

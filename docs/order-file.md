@@ -1,6 +1,20 @@
 # The order file
 
-YAML. Unknown keys are errors. `ordo check` reports every problem with the path to the field.
+YAML. Unknown keys are errors. `ordo check` reports every problem with the file and the path to the field.
+
+## Three places
+
+The owner writes a new order as one file, `work.yaml`, as below. The first `ordo start` (or `ordo split`) splits it, so that each session reads only what it needs and the owner can edit the order while it runs:
+
+| File                     | Holds                                                                | Who writes it                                                                                  |
+| ------------------------ | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `work.yaml`              | `title`, `context`, `planner`, `decider`, `settings`                 | The owner, at any time. The dispatcher reads it again before it starts a session.              |
+| `work.live.yaml`         | `state`, `replan`, `questions`, and the tasks `pending` or `running` | The dispatcher only. Edit it only after `ordo stop`.                                           |
+| `work.archive/<id>.yaml` | One task that ran (any other status), with its report and `seq`      | The dispatcher, once, when the task finishes. `seq` numbers the tasks in the order they ended. |
+
+The split keeps the owner's comments in `work.yaml`. An order in one file is still read by `ordo check`, `ordo status` and `ordo answer`; it is split only by `ordo start`, `ordo run` and `ordo split`. An order file that holds `state` or `tasks` while `work.live.yaml` exists is refused: the live part must be in one place.
+
+A change to `work.yaml` while the dispatcher runs applies to the sessions that start after it; running sessions keep what they were started with. A change that is not valid (a bad key, a model plugin the dispatcher does not have, `state` or `tasks` put back) is refused: the dispatcher logs it, notifies the owner once and goes on with the version it has.
 
 ```yaml
 title: Translate "The Lighthouse Keeper" # required
@@ -54,7 +68,7 @@ The planner names the model of each task it adds. Its prompt lists the models th
 
 | Field    | Meaning                                                                                                                                                                                                                                                                     |
 | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`     | Unique. A replanned task gets a new id; ids of tasks that ran are never reused.                                                                                                                                                                                             |
+| `id`     | Unique; letters, digits, `.`, `_` and `-`, starting with a letter or digit (it names the archive file). A replanned task gets a new id; ids of tasks that ran are never reused.                                                                                             |
 | `title`  | One line.                                                                                                                                                                                                                                                                   |
 | `model`  | See Models.                                                                                                                                                                                                                                                                 |
 | `after`  | Ids that must be `done` before this task starts. Without it a task may start as soon as a worker is free. Tasks start in file order. A pending task may name only tasks that are `done`, `pending` or `running`. `failed`, `blocked` and `interrupted` never become `done`. |
@@ -98,4 +112,4 @@ Statuses:
 - A planner that fails twice in a row (timeout, unreadable reply, invalid patch) stops the dispatcher once the running tasks are done (`replan-failed`). The owed replan stays in the file.
 - A planner patch that leaves a pending task waiting on a `failed`, `blocked` or `interrupted` task is rejected, and the planner is asked again. When the file is already in that state and no replan is owed, the dispatcher calls the planner before it stops. Two failed replans in a row stop the dispatcher once the running tasks are done (`replan-failed`).
 - When pending tasks still cannot start and no question is open, the dispatcher stops as `stuck`.
-- If the order file changes on disk while the dispatcher runs, it does not overwrite it: it stops (`conflict`) and leaves its own version in `<order>.ordo/order.conflict.yaml`. Change an order only through `ordo answer`, or after `ordo stop`.
+- If the live file changes on disk while the dispatcher runs, it does not overwrite it: it stops (`conflict`) and leaves its own version of the whole order in `<order>.ordo/order.conflict.yaml`. Change the live file only through `ordo answer`, or after `ordo stop`. The order file is the owner's: editing it is never a conflict.

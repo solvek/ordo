@@ -2,9 +2,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { orderPaths } from "../src/files.ts";
-import { type Order, parseOrder } from "../src/order.ts";
+import { type Order } from "../src/order.ts";
 import { PAUSE_TEXT } from "../src/prompts.ts";
 import { SessionLimitError } from "../src/session.ts";
+import { readStored } from "../src/store.ts";
 import {
   BIG,
   SMALL,
@@ -21,7 +22,7 @@ import {
 afterEach(cleanTemp);
 
 function saved(file: string): Order {
-  return parseOrder(readFileSync(file, "utf8"));
+  return readStored(orderPaths(file)).order;
 }
 
 function statuses(file: string): string[] {
@@ -496,15 +497,66 @@ describe("dispatcher: one file, one process", () => {
     expect(h.host.sessions).toHaveLength(1);
   });
 
-  it("stops without overwriting a file someone else changed", async () => {
+  it("splits a one-file order into the order, the live file and the archive", async () => {
+    const file = tempOrder(
+      `# The owner's comment stays.\n${orderText(`${task("ch0", "    status: done\n")}${task("ch1")}${task("ch2")}`)}`,
+    );
+    const h = await started(file);
+    const paths = orderPaths(file);
+    const head = readFileSync(file, "utf8");
+    expect(head).toContain("# The owner's comment stays.");
+    expect(head).toContain("title: Fictional book");
+    expect(head).not.toMatch(/^(state|tasks):/m);
+    expect(readFileSync(paths.live, "utf8")).not.toContain("ch0");
+    expect(readFileSync(join(paths.archive, "ch0.yaml"), "utf8")).toContain("seq: 1");
+    h.host.answer(done());
+    await flush();
+    expect(readFileSync(join(paths.archive, "ch1.yaml"), "utf8")).toContain("seq: 2");
+    expect(statuses(file)).toEqual(["ch0:done", "ch1:done", "ch2:running"]);
+    h.dispatcher.stop();
+    await h.dispatcher.result;
+    expect(statuses(file)).toEqual(["ch0:done", "ch1:done", "ch2:interrupted"]);
+    expect(existsSync(join(paths.archive, "ch2.yaml"))).toBe(true);
+  });
+
+  it("takes in an order file the owner edits while it runs", async () => {
     const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
     const h = await started(file);
-    const edited = readFileSync(file, "utf8").replace("Fictional book", "Edited by hand");
+    const edited = readFileSync(file, "utf8")
+      .replace("Fictional book", "Edited by hand")
+      .replace("chapter by chapter", "page by page");
     writeFileSync(file, edited);
+    h.host.answer(done());
+    await flush();
+    expect(h.host.lastOpen().request.prompt).toContain("page by page");
+    expect(h.dispatcher.status().title).toBe("Edited by hand");
+    expect(readFileSync(file, "utf8")).toBe(edited);
+    expect(h.log.lines.some((line) => line.message.startsWith("the order file changed"))).toBe(
+      true,
+    );
+  });
+
+  it("keeps its version of the order when the owner's edit is not valid", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    writeFileSync(file, readFileSync(file, "utf8").replace("title:", "titel:"));
+    h.host.answer(done());
+    await flush();
+    expect(h.host.lastOpen().request.prompt).toContain("Your task: ch2");
+    expect(h.dispatcher.status().title).toBe("Fictional book");
+    expect(h.notifier.notices.map((notice) => notice.kind)).toEqual(["error"]);
+  });
+
+  it("stops without overwriting a live file someone else changed", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    const h = await started(file);
+    const live = orderPaths(file).live;
+    const edited = readFileSync(live, "utf8").replace("Translate ch2", "Edited by hand");
+    writeFileSync(live, edited);
     h.host.answer(done());
     const result = await h.dispatcher.result;
     expect(result.reason).toBe("conflict");
-    expect(readFileSync(file, "utf8")).toBe(edited);
+    expect(readFileSync(live, "utf8")).toBe(edited);
     expect(existsSync(join(orderPaths(file).runDir, "order.conflict.yaml"))).toBe(true);
   });
 
@@ -531,10 +583,11 @@ describe("dispatcher: pool", () => {
     expect(h.host.sessions[1]?.request.prompt).toContain("Running now: a (Translate a)");
     h.host.answer(done(), h.host.sessions[1]);
     await flush();
-    expect(statuses(file)).toEqual(["a:running", "b:done", "c:pending", "d:running"]);
+    // Tasks that ran come first: they are read from the archive.
+    expect(statuses(file)).toEqual(["b:done", "a:running", "c:pending", "d:running"]);
     h.host.answer(done(), h.host.sessions[0]);
     await flush();
-    expect(statuses(file)).toEqual(["a:done", "b:done", "c:running", "d:running"]);
+    expect(statuses(file)).toEqual(["b:done", "a:done", "c:running", "d:running"]);
   });
 
   it("merges state patches of parallel workers", async () => {

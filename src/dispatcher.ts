@@ -1,11 +1,12 @@
 // The dispatcher: one process, one order. It spends no model tokens itself. It starts worker
 // sessions for runnable tasks, writes the time into them, records what they hand in, and calls
-// the planner when the backlog needs a decision. The order file is its memory: a dispatcher
-// started again continues from the file.
+// the planner when the backlog needs a decision. The order's files are its memory: a dispatcher
+// started again continues from them. The owner may edit the order file while it runs; the
+// dispatcher reads it again before it starts a session.
 import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ControlRequest, type ControlResponse } from "./control.ts";
-import { type OrderPaths, acquireLock, orderPaths, readOrderText, writeAtomic } from "./files.ts";
+import { type OrderPaths, acquireLock, orderPaths, readOrderText } from "./files.ts";
 import { type Log, silentLog } from "./logger.ts";
 import { type Notice, type NoticeKind, type Notifier } from "./notify.ts";
 import {
@@ -27,7 +28,8 @@ import {
   modelText,
   openQuestions,
   orderPlugins,
-  parseOrder,
+  orderProblems,
+  parseOrderFile,
   patchState,
   pendingTasks,
   recoverOrder,
@@ -35,6 +37,7 @@ import {
   runnableTasks,
   textHash,
   updateTask,
+  withHead,
   withReplan,
 } from "./order.ts";
 import {
@@ -62,6 +65,7 @@ import {
   systemClock,
 } from "./session.ts";
 import { type Mode, type StatusReport, totals } from "./status.ts";
+import { liveHashNow, readStored, splitOrder, writeStored } from "./store.ts";
 import { redact } from "./transcript.ts";
 
 /**
@@ -122,7 +126,7 @@ export interface DispatcherOptions {
 
 class ConflictError extends Error {
   constructor() {
-    super("the order file was changed by someone else while the dispatcher ran");
+    super("the live file was changed by someone else while the dispatcher ran");
     this.name = "ConflictError";
   }
 }
@@ -172,7 +176,11 @@ export class Dispatcher {
     state: {},
     tasks: [],
   };
-  private hash = "";
+  /** Hash of the order file the dispatcher runs by, and of a changed one it refused. */
+  private headHash = "";
+  private refusedHeadHash = "";
+  private liveHash: string | null = null;
+  private archived = new Map<string, number>();
   private pool = 1;
   private minutes: Minutes = DEFAULT_MINUTES;
   private disallowedTools: readonly string[] = DEFAULT_DISALLOWED_TOOLS;
@@ -213,19 +221,25 @@ export class Dispatcher {
   start(): void {
     this.release = acquireLock(this.paths);
     try {
-      const text = readOrderText(this.paths.order);
-      this.order = parseOrder(text);
-      this.hash = textHash(text);
+      let stored = readStored(this.paths);
+      this.order = stored.order;
       const missing = this.missingPlugins();
       if (missing.length > 0) {
         throw new OrderError(
           `no model plugin ${missing.join(", ")} (known: ${Object.keys(this.options.hosts).join(", ")})`,
         );
       }
-      this.pool = this.options.pool ?? this.order.settings?.pool ?? 1;
-      this.minutes = minutesOf(this.order.settings);
-      this.disallowedTools = this.order.settings?.disallowedTools ?? DEFAULT_DISALLOWED_TOOLS;
-      this.notifiers = this.options.notifiers?.(this.order) ?? [];
+      if (stored.layout === "single") {
+        stored = splitOrder(this.paths, stored);
+        this.log.warn("the order is split: the dispatcher keeps the live part and the archive", {
+          live: this.paths.live,
+          archive: this.paths.archive,
+        });
+      }
+      this.headHash = stored.headHash;
+      this.liveHash = stored.liveHash;
+      this.archived = stored.archived;
+      this.applySettings();
       mkdirSync(this.paths.sessions, { recursive: true });
       this.sessionSeq = readdirSync(this.paths.sessions).length;
       const recovered = recoverOrder(this.order);
@@ -396,9 +410,68 @@ export class Dispatcher {
     };
   }
 
+  private applySettings(): void {
+    this.pool = this.options.pool ?? this.order.settings?.pool ?? 1;
+    this.minutes = minutesOf(this.order.settings);
+    this.disallowedTools = this.order.settings?.disallowedTools ?? DEFAULT_DISALLOWED_TOOLS;
+    this.notifiers = this.options.notifiers?.(this.order) ?? [];
+  }
+
+  /**
+   * Take in an order file the owner changed: title, context, models and settings apply to the
+   * sessions that start from now on. A change that is not valid is refused once, with a notice,
+   * and the dispatcher goes on by the version it has.
+   */
+  private refreshHead(): void {
+    let text: string;
+    try {
+      text = readOrderText(this.paths.order);
+    } catch (error: unknown) {
+      // A file being replaced by an editor may be missing for a moment.
+      if (error instanceof OrderError) return;
+      throw error;
+    }
+    const hash = textHash(text);
+    if (hash === this.headHash || hash === this.refusedHeadHash) return;
+    const before = this.order;
+    try {
+      const { head, live } = parseOrderFile(text);
+      if (live !== null) {
+        throw new OrderError(
+          `state, replan, questions and tasks are kept in ${this.paths.live}; take them out of the order file`,
+        );
+      }
+      this.order = withHead(this.order, head);
+      const problems = orderProblems(this.order);
+      const missing = this.missingPlugins();
+      if (missing.length > 0) problems.push(`no model plugin ${missing.join(", ")}`);
+      if (problems.length > 0) throw new OrderError(problems.join("\n"));
+    } catch (error: unknown) {
+      if (!(error instanceof OrderError)) throw error;
+      this.order = before;
+      this.refusedHeadHash = hash;
+      this.log.error(
+        "the changed order file is not valid; the dispatcher keeps the version it has",
+        {
+          problem: error.message,
+        },
+      );
+      this.notify(
+        "error",
+        `The changed order file is not valid; the dispatcher keeps the version it has.\n${error.message}`,
+      );
+      return;
+    }
+    this.headHash = hash;
+    this.refusedHeadHash = "";
+    this.applySettings();
+    this.log.warn("the order file changed; sessions that start from now on use it");
+  }
+
   /** Decide what to start next, or whether the run is over. */
   private pump(): void {
     if (this.halted || this.mode === "stopping") return;
+    this.refreshHead();
     this.notifyQuestions();
     const idle = (): boolean => this.workers.size === 0 && this.meta === null;
     if (this.haltWhenIdle !== null) {
@@ -900,10 +973,8 @@ export class Dispatcher {
   }
 
   private save(): void {
-    if (textHash(readOrderText(this.paths.order)) !== this.hash) throw new ConflictError();
-    const text = formatOrder(this.order);
-    writeAtomic(this.paths.order, text);
-    this.hash = textHash(text);
+    if (liveHashNow(this.paths) !== this.liveHash) throw new ConflictError();
+    this.liveHash = writeStored(this.paths, this.order, this.archived);
   }
 
   private missingPlugins(): string[] {

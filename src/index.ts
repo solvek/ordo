@@ -43,3 +43,4 @@ export {
   systemClock,
 } from "./session.ts";
 export { type StatusReport, fileStatus, formatStatus } from "./status.ts";
+export { type StoredOrder, readStored, splitOrder, writeStored } from "./store.ts";

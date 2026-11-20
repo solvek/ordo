@@ -6,8 +6,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import { OrderError } from "./order.ts";
 
 export interface OrderPaths {
-  /** Absolute path of the order file. */
+  /** Absolute path of the order file: what the owner writes and may edit at any time. */
   order: string;
+  /** `<order>.live.yaml`: state, backlog, questions, owed replans. Only the dispatcher writes it. */
+  live: string;
+  /** `<order>.archive/`: one `<task id>.yaml` per task that ran, with its report. */
+  archive: string;
   /** `<order without .yaml>.ordo/` next to the order: lock, log, transcripts. */
   runDir: string;
   lock: string;
@@ -26,6 +30,8 @@ export function orderPaths(file: string, env: NodeJS.ProcessEnv = process.env): 
   const id = createHash("sha256").update(order).digest("hex").slice(0, 16);
   return {
     order,
+    live: join(dirname(order), `${name}.live.yaml`),
+    archive: join(dirname(order), `${name}.archive`),
     runDir,
     lock: join(runDir, "lock"),
     log: join(runDir, "ordo.log"),

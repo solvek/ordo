@@ -293,6 +293,30 @@ describe("cli", () => {
     expect(order.replan?.[0]?.reason).toBe("answers");
   });
 
+  it("splits an order on request, then checks it and answers in the live file", () => {
+    const file = tempOrder(
+      orderText(task("ch1", "    status: blocked\n")).replace(
+        "state: {}",
+        'state: {}\nquestions:\n  - { id: q1, task: ch1, text: Which?, askedAt: "2030-01-01T00:00:00.000Z" }',
+      ),
+    );
+    const cwd = tempDir();
+    const paths = orderPaths(file);
+    const before = ordo(["check", file], cwd);
+    expect(before.stdout).toContain("layout: one file");
+    const split = ordo(["split", file], cwd);
+    expect(split.stderr).toBe("");
+    expect(split.stdout).toContain(`live: ${paths.live}`);
+    expect(readFileSync(file, "utf8")).not.toContain("questions:");
+    expect(ordo(["split", file], cwd).stdout).toContain("already split");
+    const after = ordo(["check", file], cwd);
+    expect(after.stdout).toContain(`archive: ${paths.archive}`);
+    expect(after.stdout).toContain("tasks: blocked 1");
+    expect(ordo(["answer", file, "q1", "This", "one"], cwd).stderr).toBe("");
+    expect(readFileSync(paths.live, "utf8")).toContain("answer: This one");
+    expect(readFileSync(paths.live, "utf8")).toContain("reason: answers");
+  });
+
   it("shows the status from the file and says when nothing runs", () => {
     const file = tempOrder(orderText(`${task("ch1", "    status: done\n")}${task("ch2")}`));
     const cwd = tempDir();

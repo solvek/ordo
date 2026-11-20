@@ -10,7 +10,7 @@ TypeScript in strict mode, Node.js 24+, pnpm, ESM. ESLint (`typescript-eslint` s
 
 - Ordo knows no subject area. No words from a particular domain in code, prompts, docs or examples.
 - The logic is a library: functions take typed input and return typed results, with no `process.argv` or console inside. `src/cli.ts` only parses arguments, reads files and prints.
-- The order file is the memory. Anything the dispatcher must remember across a restart goes into the file; anything else may be lost.
+- The order's files are the memory: the order file (the owner's), the live file and the archive (the dispatcher's). Anything the dispatcher must remember across a restart goes into them; anything else may be lost.
 - Model access goes through `SessionHost`; notifications through `NotifierPlugin`.
 
 ## Types

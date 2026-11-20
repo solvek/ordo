@@ -9,19 +9,13 @@ import { claudeHost } from "./claude.ts";
 import { openaiEnvProblems, openaiHost } from "./openai.ts";
 import { registrations, register, sendControl, serveControl, statusFromReply } from "./control.ts";
 import { Dispatcher, type RunResult } from "./dispatcher.ts";
-import { acquireLock, lockHolder, orderPaths, readOrderText, writeAtomic } from "./files.ts";
+import { acquireLock, lockHolder, orderPaths } from "./files.ts";
 import { createLogger, parseLevel, prettyLine } from "./logger.ts";
 import { createNotifiers, telegramChats } from "./notify.ts";
-import {
-  OrderError,
-  answerQuestion,
-  formatOrder,
-  orderPlugins,
-  parseOrder,
-  textHash,
-} from "./order.ts";
+import { OrderError, answerQuestion, orderPlugins, textHash } from "./order.ts";
 import { type SessionHost } from "./session.ts";
 import { type StatusReport, fileStatus, formatStatus } from "./status.ts";
+import { liveHashNow, readStored, splitOrder, writeSingle, writeStored } from "./store.ts";
 
 const HELP = `ordo — run a long piece of work as short model sessions
 
@@ -35,6 +29,7 @@ Usage:
   ordo stop [<order.yaml>]                              close every session now and exit
   ordo answer [<order.yaml>] <question-id> <text>       answer a question of a blocked task
   ordo check [<order.yaml>]                             validate an order
+  ordo split <order.yaml>                               split a one-file order without starting it
   ordo logs [<order.yaml>] [-n N] [-f]                  the dispatcher log
   ordo notify-test [<order.yaml>]                       send a test notification
 
@@ -97,6 +92,8 @@ async function main(argv: string[]): Promise<number> {
       return answerCommand(rest);
     case "check":
       return check(await orderArg(command, file));
+    case "split":
+      return split(needFile());
     case "logs":
       return logs(await orderArg(command, file), values.lines, values.follow);
     case "notify-test":
@@ -179,8 +176,8 @@ async function run(
 }
 
 async function start(file: string, pool: number | undefined, useApiKey: boolean): Promise<number> {
-  parseOrder(readOrderText(file));
   const paths = orderPaths(file);
+  readStored(paths);
   const holder = lockHolder(paths);
   if (holder !== null)
     throw new OrderError(`the order is already run by process ${String(holder)}`);
@@ -279,7 +276,7 @@ async function answerCommand(rest: string[]): Promise<number> {
 
 async function statusOf(file: string): Promise<StatusReport> {
   const reply = await sendControl(orderPaths(file).socket, { cmd: "status" });
-  if (reply === null) return fileStatus(parseOrder(readOrderText(file)), file);
+  if (reply === null) return fileStatus(readStored(orderPaths(file)).order, file);
   if (!reply.ok) throw new Error(reply.error);
   return reply.status;
 }
@@ -345,14 +342,20 @@ async function answer(file: string, id: string, text: string): Promise<number> {
     process.stdout.write(`${formatStatus(reply.status, Date.now())}\n`);
     return 0;
   }
-  // No dispatcher: take the lock so none starts while the file is written.
+  // No dispatcher: take the lock so none starts while the files are written.
   const release = acquireLock(paths);
   try {
-    const before = readOrderText(file);
-    const order = answerQuestion(parseOrder(before), id, text, "owner", new Date());
-    if (textHash(readOrderText(file)) !== textHash(before))
-      throw new Error("the order file changed meanwhile; try again");
-    writeAtomic(file, formatOrder(order));
+    const stored = readStored(paths);
+    const order = answerQuestion(stored.order, id, text, "owner", new Date());
+    if (stored.layout === "single") {
+      if (textHash(readFileSync(file, "utf8")) !== stored.headHash)
+        throw new Error("the order file changed meanwhile; try again");
+      writeSingle(paths, order);
+    } else {
+      if (liveHashNow(paths) !== stored.liveHash)
+        throw new Error("the live file changed meanwhile; try again");
+      writeStored(paths, order, stored.archived);
+    }
     process.stdout.write(`${formatStatus(fileStatus(order, file), Date.now())}\n`);
   } finally {
     release();
@@ -368,7 +371,8 @@ function hostsOf(useApiKey: boolean): Record<string, SessionHost> {
 }
 
 async function check(file: string): Promise<number> {
-  const order = parseOrder(readOrderText(file));
+  const paths = orderPaths(file);
+  const { order, layout } = readStored(paths);
   const problems: string[] = [];
   const plugins = orderPlugins(order);
   for (const plugin of plugins) {
@@ -386,6 +390,11 @@ async function check(file: string): Promise<number> {
     () => null,
   );
   process.stdout.write(`${formatStatus(statusFromReply(order, file, reply), Date.now())}\n`);
+  process.stdout.write(
+    layout === "single"
+      ? "  layout: one file; ordo start (or ordo split) moves the live part out\n"
+      : `  live: ${paths.live}\n  archive: ${paths.archive}\n`,
+  );
   if (problems.length > 0) {
     process.stderr.write(`${problems.join("\n")}\n`);
     return 1;
@@ -425,8 +434,28 @@ async function logs(file: string, lines: string | undefined, follow: boolean): P
   }
 }
 
+/** Split a one-file order under the lock, so no dispatcher starts meanwhile. */
+function split(file: string): number {
+  const paths = orderPaths(file);
+  const release = acquireLock(paths);
+  try {
+    const stored = readStored(paths);
+    if (stored.layout === "split") {
+      process.stdout.write(`already split\nlive: ${paths.live}\narchive: ${paths.archive}\n`);
+      return 0;
+    }
+    splitOrder(paths, stored);
+    process.stdout.write(
+      `split\norder: ${paths.order}\nlive: ${paths.live}\narchive: ${paths.archive}\n`,
+    );
+    return 0;
+  } finally {
+    release();
+  }
+}
+
 async function notifyTest(file: string): Promise<number> {
-  const order = parseOrder(readOrderText(file));
+  const { order } = readStored(orderPaths(file));
   const configs = order.settings?.notify ?? [];
   if (configs.length === 0) {
     process.stderr.write("the order has no settings.notify\n");
