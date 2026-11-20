@@ -745,9 +745,80 @@ export function answerQuestion(
   return next;
 }
 
+/** Start of the paragraph a continuation adds to the prompt it repeats. */
+const CONTINUED = "\n\nOrdo: a previous session";
+
+const CUT_BY: Record<InterruptReason, string> = {
+  time: "when its time ran out",
+  limit: "by the usage limit of the account",
+  stop: "when the owner stopped the dispatcher",
+  crash: "when the dispatcher stopped",
+};
+
 /**
- * A dispatcher that vanished left tasks `running`. They become `interrupted` and the planner
- * decides how to go on.
+ * Whether an interrupted task goes on by itself, as a continuation, rather than through the
+ * planner. A session cut off by the limit, the owner or a crash did not judge its task, so the
+ * task goes on. One that ran out of time goes on once; if its continuation runs out of time too,
+ * the task is too large and the planner splits it. A proposal always goes to the planner.
+ */
+export function continuesByItself(task: Task): boolean {
+  const report = task.report;
+  if (task.status !== "interrupted" || report?.reason === undefined) return false;
+  if (report.proposal.trim() !== "") return false;
+  return report.reason !== "time" || !task.prompt.includes(CONTINUED);
+}
+
+/**
+ * Continue an interrupted task as a new pending task right after it: the same title, model and
+ * prompt, plus a paragraph that says a previous session did part of it. Pending tasks that
+ * waited on it wait on the continuation. Returns the order and the id of the new task.
+ */
+export function continueTask(order: Order, id: string): { order: Order; id: string } {
+  const index = order.tasks.findIndex((task) => task.id === id);
+  const old = order.tasks[index];
+  if (old === undefined) throw new OrderError(`no task ${id}`);
+  const ids = new Set(order.tasks.map((task) => task.id));
+  const root = id.replace(/-cont(?:-\d+)?$/, "");
+  let next = `${root}-cont`;
+  for (let n = 2; ids.has(next); n += 1) next = `${root}-cont-${String(n)}`;
+  const reason = old.report?.reason;
+  const minutes = old.report?.minutes;
+  const cut = [
+    reason === undefined ? "" : ` ${CUT_BY[reason]}`,
+    minutes === undefined ? "" : ` at minute ${String(Math.round(minutes))}`,
+  ].join("");
+  const base = old.prompt.split(CONTINUED)[0] ?? old.prompt;
+  const task: Task = {
+    id: next,
+    title: old.title,
+    model: old.model,
+    prompt: `${base}${CONTINUED} (task ${id}) did part of this task and was cut off${cut}, before it handed in a report. See what it left (the files and the state this task names) and go on from there; do not redo what is finished.`,
+    status: "pending",
+  };
+  if (old.after !== undefined) task.after = old.after;
+  const tasks = order.tasks.map((item) =>
+    item.status === "pending" && item.after?.includes(id) === true
+      ? { ...item, after: item.after.map((dep) => (dep === id ? next : dep)) }
+      : item,
+  );
+  tasks.splice(index + 1, 0, task);
+  return { order: { ...order, tasks }, id: next };
+}
+
+/**
+ * An interrupted task goes on as a continuation when {@link continuesByItself}; otherwise a
+ * replan is owed.
+ */
+export function afterInterrupt(order: Order, id: string): Order {
+  const task = order.tasks.find((item) => item.id === id);
+  if (task !== undefined && continuesByItself(task)) return continueTask(order, id).order;
+  const reason = task?.report?.reason === "limit" ? "limit" : "interrupted";
+  return withReplan(order, { reason, task: id, text: task?.report?.proposal ?? "" });
+}
+
+/**
+ * A dispatcher that vanished left tasks `running`. They become `interrupted` and go on as
+ * continuations.
  */
 export function recoverOrder(order: Order): Order | null {
   const running = order.tasks.filter((task) => task.status === "running");
@@ -763,7 +834,7 @@ export function recoverOrder(order: Order): Order | null {
         reason: "crash",
       },
     }));
-    next = withReplan(next, { reason: "interrupted", task: task.id, text: "" });
+    next = afterInterrupt(next, task.id);
   }
   return next;
 }

@@ -256,7 +256,26 @@ describe("dispatcher: time", () => {
     const order = saved(file);
     expect(order.tasks[0]?.status).toBe("interrupted");
     expect(order.tasks[0]?.report).toMatchObject({ reason: "time", minutes: 55 });
-    expect(h.host.lastOpen().request.role).toBe("planner");
+    expect(order.replan).toBeUndefined();
+    expect(statuses(file)).toEqual(["ch1:interrupted", "ch1-cont:running", "ch2:pending"]);
+    const next = h.host.lastOpen().request;
+    expect(next.role).toBe("worker");
+    expect(next.prompt).toContain("Your task: ch1-cont. Translate ch1");
+    expect(next.prompt).toContain(
+      "Translate ch1 of the fictional book.\n\nOrdo: a previous session (task ch1) did part of this task and was cut off when its time ran out at minute 55",
+    );
+  });
+
+  it("calls the planner when a continuation runs out of time too", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2", "    after: [ch1]\n")}`));
+    const h = await started(file);
+    await h.clock.advanceMinutes(55);
+    expect(saved(file).tasks[2]).toMatchObject({ id: "ch2", after: ["ch1-cont"] });
+    await h.clock.advanceMinutes(55);
+    expect(saved(file).replan).toEqual([{ reason: "interrupted", task: "ch1-cont", text: "" }]);
+    const planner = h.host.lastOpen().request;
+    expect(planner.role).toBe("planner");
+    expect(planner.prompt).toContain("Task ch1-cont (Translate ch1) was interrupted at minute 55");
   });
 
   it("takes the minutes from the order settings, into the prompt and the reminders", async () => {
@@ -292,7 +311,7 @@ describe("dispatcher: time", () => {
 });
 
 describe("dispatcher: usage limit", () => {
-  it("interrupts the task, waits for the reset, then replans before going on", async () => {
+  it("interrupts the task, waits for the reset, then continues it without a replan", async () => {
     const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
     const h = await started(file);
     await h.clock.advanceMinutes(37);
@@ -302,28 +321,32 @@ describe("dispatcher: usage limit", () => {
     let order = saved(file);
     expect(order.tasks[0]?.status).toBe("interrupted");
     expect(order.tasks[0]?.report).toMatchObject({ reason: "limit", minutes: 37 });
-    expect(order.replan).toEqual([{ reason: "limit", task: "ch1", text: "" }]);
+    expect(order.replan).toBeUndefined();
     expect(h.dispatcher.status().mode).toBe("waiting-limit");
     expect(h.notifier.notices.map((notice) => notice.kind)).toEqual(["limit"]);
     await h.clock.advanceMinutes(120);
     expect(h.host.open_()).toHaveLength(0);
     await h.clock.advanceMinutes(1);
-    const planner = h.host.lastOpen();
-    expect(planner.request.role).toBe("planner");
-    expect(planner.request.prompt).toContain(
+    const worker = h.host.lastOpen();
+    expect(worker.request.role).toBe("worker");
+    expect(worker.request.prompt).toContain(
       "cut off by the usage limit of the account at minute 37",
     );
-    h.host.answer({
-      upsert: [backlogTask("ch1-rest")],
-      order: ["ch1-rest", "ch2"],
-    });
-    await flush();
     order = saved(file);
     expect(order.tasks.map((item) => `${item.id}:${item.status}`)).toEqual([
       "ch1:interrupted",
-      "ch1-rest:running",
+      "ch1-cont:running",
       "ch2:pending",
     ]);
+    // Cut again: the next continuation keeps the original prompt with one note.
+    h.host.refuse(new SessionLimitError(new Date(h.clock.now() + 60_000)));
+    await flush();
+    await h.clock.advanceMinutes(3);
+    const again = h.host.lastOpen().request.prompt;
+    expect(again).toContain("Your task: ch1-cont-2");
+    expect(again.match(/Ordo: a previous session/g)).toHaveLength(1);
+    expect(again).toContain("(task ch1-cont)");
+    expect(h.host.roles()).not.toContain("planner");
   });
 
   it("keeps the owed replan when the limit cuts the planner, and runs it after the wait", async () => {
@@ -471,7 +494,7 @@ describe("dispatcher: pause, resume, stop", () => {
     expect(statuses(file)).toEqual(["ch1:done", "ch2:pending"]);
   });
 
-  it("stops at once: the running task is interrupted and the next start begins with the planner", async () => {
+  it("stops at once: the running task is interrupted and the next start continues it", async () => {
     const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
     const h = await started(file);
     await h.clock.advanceMinutes(12);
@@ -480,20 +503,22 @@ describe("dispatcher: pause, resume, stop", () => {
     expect(h.host.last().closed).toBe(true);
     const order = saved(file);
     expect(order.tasks[0]?.report).toMatchObject({ reason: "stop", minutes: 12 });
-    expect(order.replan).toEqual([{ reason: "interrupted", task: "ch1", text: "" }]);
+    expect(order.replan).toBeUndefined();
     expect(h.notifier.notices).toHaveLength(0);
     const again = await started(file);
-    expect(again.host.lastOpen().request.role).toBe("planner");
-    expect(again.host.lastOpen().request.prompt).toContain("was interrupted at minute 12 (stop)");
+    expect(again.host.lastOpen().request.role).toBe("worker");
+    expect(again.host.lastOpen().request.prompt).toContain(
+      "cut off when the owner stopped the dispatcher at minute 12",
+    );
   });
 });
 
 describe("dispatcher: one file, one process", () => {
-  it("interrupts a task left running by a dead process and replans first", async () => {
+  it("interrupts a task left running by a dead process and continues it", async () => {
     const file = tempOrder(orderText(`${task("ch1", "    status: running\n")}${task("ch2")}`));
     const h = await started(file);
-    expect(saved(file).tasks[0]?.status).toBe("interrupted");
-    expect(h.host.lastOpen().request.role).toBe("planner");
+    expect(statuses(file)).toEqual(["ch1:interrupted", "ch1-cont:running", "ch2:pending"]);
+    expect(h.host.lastOpen().request.prompt).toContain("cut off when the dispatcher stopped");
   });
 
   it("refuses a second dispatcher while the first holds the lock", async () => {
@@ -531,7 +556,7 @@ describe("dispatcher: one file, one process", () => {
     expect(statuses(file)).toEqual(["ch0:done", "ch1:done", "ch2:running"]);
     h.dispatcher.stop();
     await h.dispatcher.result;
-    expect(statuses(file)).toEqual(["ch0:done", "ch1:done", "ch2:interrupted"]);
+    expect(statuses(file)).toEqual(["ch0:done", "ch1:done", "ch2:interrupted", "ch2-cont:pending"]);
     expect(existsSync(join(paths.archive, "ch2.yaml"))).toBe(true);
   });
 

@@ -67,7 +67,7 @@ The planner names the model of each task it adds. Its prompt lists the models th
 | `minutes.remind`     | 30        | First reminder: estimate what is left. Does not interrupt the current tool call. |
 | `minutes.wrap`       | 45        | Finish the current unit of work and hand in.                                     |
 | `minutes.finish`     | 50        | Hand in at once.                                                                 |
-| `minutes.stop`       | 55        | The session is closed; the task becomes `interrupted` and is replanned.          |
+| `minutes.stop`       | 55        | The session is closed; the task becomes `interrupted` (see Continuations).       |
 | `minutes.replan`     | 10        | Time of a planner or decider session.                                            |
 | `minutes.limitRetry` | 30        | Wait after a usage limit with no known reset time.                               |
 | `notify`             | none      | Notifiers; see the README. Secrets come from the environment.                    |
@@ -89,14 +89,20 @@ The planner names the model of each task it adds. Its prompt lists the models th
 
 Statuses:
 
-| Status        | Meaning                                                                                                                                                                                        |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`     | Not started: the backlog.                                                                                                                                                                      |
-| `running`     | A worker has it.                                                                                                                                                                               |
-| `done`        | The worker reported `done`.                                                                                                                                                                    |
-| `failed`      | The worker reported `failed`, crashed, or its reply was not readable. A replan follows.                                                                                                        |
-| `blocked`     | The worker asked the owner questions. Once they are all answered, a replan follows.                                                                                                            |
-| `interrupted` | Closed at `minutes.stop`, stopped by the owner, cut by the usage limit, or left running by a dead dispatcher. `report.reason` says which (`time`, `stop`, `limit`, `crash`). A replan follows. |
+| Status        | Meaning                                                                                                                                                                                                               |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`     | Not started: the backlog.                                                                                                                                                                                             |
+| `running`     | A worker has it.                                                                                                                                                                                                      |
+| `done`        | The worker reported `done`.                                                                                                                                                                                           |
+| `failed`      | The worker reported `failed`, crashed, or its reply was not readable. A replan follows.                                                                                                                               |
+| `blocked`     | The worker asked the owner questions. Once they are all answered, a replan follows.                                                                                                                                   |
+| `interrupted` | Closed at `minutes.stop`, stopped by the owner, cut by the usage limit, or left running by a dead dispatcher. `report.reason` says which (`time`, `stop`, `limit`, `crash`). It goes on as a continuation; see below. |
+
+### Continuations
+
+A task cut off before its worker handed in a report did not fail: its session ended for a reason outside the task. It goes on as a new pending task right after it, without the planner: the id gets `-cont` (then `-cont-2`, …), the title, model and `after` stay, and the prompt is the original one plus a paragraph: a previous session (task `<id>`) did part of this and was cut off, see what it left and go on from there. Pending tasks that waited on the cut task wait on the continuation.
+
+This holds for the usage limit, the owner's stop and a dead dispatcher, every time. A task closed at `minutes.stop` goes on once; if its continuation is closed at `minutes.stop` too, the task is too large and a replan (`interrupted`) follows, so the planner can split it. The planner is called only for a proposal, a failed task, answers to questions, a stuck backlog, and that case.
 
 `report` holds `summary`, `proposal`, an optional `note`, and when known `reason`, `minutes`, `turns`, `costUsd` (the API-equivalent cost the session reports).
 
@@ -113,7 +119,7 @@ Statuses:
 
 ## Fields the dispatcher keeps
 
-- `replan`: replan reasons not yet handled (`proposal`, `failed`, `interrupted`, `limit`, `answers`, `stuck`), each with its `task` and `text`. Written before the planner starts, removed when its patch is saved, so a dispatcher stopped in between replans first on its next start. `stuck` means pending tasks wait on tasks that will not become `done`.
+- `replan`: replan reasons not yet handled (`proposal`, `failed`, `interrupted`, `answers`, `stuck`; `limit` in files from an older Ordo), each with its `task` and `text`. Written before the planner starts, removed when its patch is saved, so a dispatcher stopped in between replans first on its next start. `stuck` means pending tasks wait on tasks that will not become `done`.
 - `questions`: `id`, `task`, `text`, `askedAt`, and once answered `answer`, `answeredBy` (`owner` or the decider's model), `answeredAt`.
 
 ## Rules the dispatcher keeps

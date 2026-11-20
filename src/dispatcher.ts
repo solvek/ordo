@@ -20,6 +20,7 @@ import {
   type TaskReport,
   WorkerReply,
   addQuestions,
+  afterInterrupt,
   answerQuestion,
   applyPlan,
   backlogBlockers,
@@ -352,7 +353,7 @@ export class Dispatcher {
             minutes: minutesSince(run.startedAt, now),
           },
         }));
-        this.order = withReplan(this.order, { reason: "interrupted", task: run.task.id, text: "" });
+        this.order = afterInterrupt(this.order, run.task.id);
       }
       if (this.meta !== null) this.settleMeta(this.meta);
       this.save();
@@ -629,7 +630,6 @@ export class Dispatcher {
     if (end.kind === "timeout") {
       status = "interrupted";
       report = { summary: timeoutSummary(this.minutes), proposal: "", reason: "time", ...base };
-      this.order = withReplan(this.order, { reason: "interrupted", task: id, text: "" });
     } else if (end.kind === "error") {
       if (end.error instanceof SessionLimitError) {
         status = "interrupted";
@@ -639,7 +639,6 @@ export class Dispatcher {
           reason: "limit",
           ...base,
         };
-        this.order = withReplan(this.order, { reason: "limit", task: id, text: "" });
         this.enterLimit(end.error.resetsAt);
       } else {
         status = "failed";
@@ -681,6 +680,13 @@ export class Dispatcher {
       }
     }
     this.order = updateTask(this.order, id, (task) => ({ ...task, status, report }));
+    if (status === "interrupted") {
+      const count = this.order.tasks.length;
+      this.order = afterInterrupt(this.order, id);
+      if (this.order.tasks.length > count) {
+        this.log.warn("the task goes on as a continuation, without a replan", { task: id });
+      }
+    }
     this.save();
     const level = status === "done" ? "info" : "warn";
     this.log[level]("task finished", {

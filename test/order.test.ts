@@ -328,13 +328,18 @@ questions:
 });
 
 describe("recoverOrder", () => {
-  it("interrupts tasks left running and owes a replan", () => {
+  it("interrupts tasks left running and continues them", () => {
     const order = recoverOrder(
       parseOrder(orderText(`${task("ch1", "    status: running\n")}${task("ch2")}`)),
     );
     expect(order?.tasks[0]?.status).toBe("interrupted");
     expect(order?.tasks[0]?.report?.reason).toBe("crash");
-    expect(order?.replan).toEqual([{ reason: "interrupted", task: "ch1", text: "" }]);
+    expect(order?.tasks.map((item) => `${item.id}:${item.status}`)).toEqual([
+      "ch1:interrupted",
+      "ch1-cont:pending",
+      "ch2:pending",
+    ]);
+    expect(order?.replan).toBeUndefined();
     expect(recoverOrder(parseOrder(orderText(task("ch1"))))).toBeNull();
   });
 });
