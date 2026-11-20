@@ -8,6 +8,7 @@ export const MODES = [
   "pausing",
   "paused",
   "waiting-limit",
+  "waiting-disk",
   "waiting-owner",
   "stopping",
   "not-running",

@@ -14,6 +14,7 @@ It is not tied to code or git: reading scanned documents, translating a book, so
 - **Continuation**: a task cut off without a report (by the usage limit, the owner's stop, a dead dispatcher, or its time) did not fail. It goes on as a new task with the same prompt and model and a note that a previous session did part of it, without a replan. Only a continuation that runs out of time again goes to the planner.
 - **Usage limit**: the dispatcher waits until the limit resets, then continues the interrupted task. When only the planner's plugin is limited, with no reset in sight, a Claude fallback plans meanwhile (`plannerFallback`).
 - **Questions**: a blocked task waits for the owner; tasks that do not depend on it go on. The owner gets a notification and answers with `ordo answer`. An optional _decider_ model may answer first.
+- **Disk space**: before each session the dispatcher checks the free space where transcripts are written. Below `settings.minFreeMB` (1 GB) it starts nothing, notifies the owner, and goes on by itself once there is room.
 - **Restart**: everything the dispatcher knows is in the files. Started again, it continues where it stopped; tasks a dead process left running are marked interrupted and continued.
 
 ## Install
@@ -70,7 +71,7 @@ Notifiers are listed in the order under `settings.notify`. Built in:
 - `telegram`: needs `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the environment. Create a bot with @BotFather, send it a message, run `ordo notify-test <order>` to see your chat id.
 - `command`: runs a shell command with the text on stdin and `ORDO_NOTICE_KIND`, `ORDO_ORDER` in the environment.
 
-The owner is notified about questions, a finished order, a dispatcher that stopped on an error, a usage-limit wait longer than an hour, and a weekly usage window above 90 %.
+The owner is notified about questions, a finished order, a dispatcher that stopped on an error, a usage-limit wait longer than an hour, a weekly usage window above 90 %, too little free disk space (and when it is back), and a changed order file that is not valid.
 
 ## Files
 

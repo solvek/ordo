@@ -61,6 +61,8 @@ export type NotifierConfig = z.infer<typeof NotifierConfig>;
 
 const SettingsFile = z.strictObject({
   pool: z.number().int().min(1).optional(),
+  /** Free megabytes needed where session transcripts are written; 0 turns the check off. */
+  minFreeMB: z.number().min(0).optional(),
   minutes: Minutes.optional(),
   notify: z.array(NotifierConfig).optional(),
   disallowedTools: z.array(z.string().min(1)).optional(),
@@ -452,6 +454,8 @@ export const DEFAULT_MINUTES: Minutes = {
   replan: 10,
   limitRetry: 30,
 };
+
+export const DEFAULT_MIN_FREE_MB = 1024;
 
 export function minutesOf(settings: SettingsFile | undefined): Minutes {
   const given = settings?.minutes ?? {};

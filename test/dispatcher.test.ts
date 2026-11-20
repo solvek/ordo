@@ -763,6 +763,48 @@ describe("dispatcher: status", () => {
   });
 });
 
+describe("dispatcher: disk space", () => {
+  it("starts no session while free space is short, tells the owner, and goes on when it is back", async () => {
+    const file = tempOrder(
+      orderText(`${task("ch1")}${task("ch2")}`, "settings:\n  minFreeMB: 500\n"),
+    );
+    let free = 2000 * 1024 * 1024;
+    const h = await started(file, { freeBytes: () => free });
+    expect(h.host.sessions).toHaveLength(1);
+    free = 300 * 1024 * 1024;
+    h.host.answer(done());
+    await flush();
+    expect(h.host.open_()).toHaveLength(0);
+    expect(statuses(file)).toEqual(["ch1:done", "ch2:pending"]);
+    expect(h.dispatcher.status().mode).toBe("waiting-disk");
+    expect(h.notifier.notices.map((notice) => notice.text)).toEqual([
+      expect.stringContaining("Only 300 MB are free"),
+    ]);
+    await h.clock.advanceMinutes(5);
+    expect(h.host.open_()).toHaveLength(0);
+    expect(h.notifier.notices).toHaveLength(1);
+    free = 600 * 1024 * 1024;
+    await h.clock.advanceMinutes(5);
+    expect(h.host.lastOpen().request.prompt).toContain("Your task: ch2");
+    expect(h.dispatcher.status().mode).toBe("running");
+    expect(h.notifier.notices[1]?.text).toContain("600 MB are free again");
+  });
+
+  it("checks before a replan too, and not at all with minFreeMB 0", async () => {
+    const file = tempOrder(orderText(`${task("ch1")}${task("ch2")}`));
+    let free = 2 * 1024 * 1024 * 1024;
+    const h = await started(file, { freeBytes: () => free });
+    free = 0;
+    h.host.answer(done("Translated.", { proposal: "add ch3" }));
+    await flush();
+    expect(h.host.open_()).toHaveLength(0);
+    expect(h.dispatcher.status().mode).toBe("waiting-disk");
+    const off = tempOrder(orderText(task("ch1"), "settings:\n  minFreeMB: 0\n"));
+    const unchecked = await started(off, { freeBytes: () => 0 });
+    expect(unchecked.host.sessions).toHaveLength(1);
+  });
+});
+
 describe("dispatcher: sessions", () => {
   it("passes the disallowed tools and writes a transcript per session", async () => {
     const file = tempOrder(orderText(task("ch1"), "settings:\n  disallowedTools: [WebSearch]\n"));

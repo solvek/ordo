@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 import { type NotifierConfig, OrderError } from "./order.ts";
 
-export type NoticeKind = "questions" | "done" | "error" | "limit" | "usage" | "test";
+export type NoticeKind = "questions" | "done" | "error" | "limit" | "usage" | "disk" | "test";
 
 export interface Notice {
   kind: NoticeKind;
@@ -40,6 +40,7 @@ const NOTICE_TITLES: Record<NoticeKind, string> = {
   error: "Dispatcher stopped",
   limit: "Waiting for the usage limit",
   usage: "Usage limit nearly used up",
+  disk: "Free disk space",
   test: "Test notification",
 };
 

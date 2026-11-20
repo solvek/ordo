@@ -25,6 +25,7 @@ plannerFallback: { plugin: claude-code, name: claude-sonnet-5-5, effort: high } 
 decider: { plugin: claude-code, name: claude-opus-5-5, effort: low } # optional
 settings: # optional, every key optional
   pool: 1
+  minFreeMB: 1024
   minutes: { tick: 10, remind: 30, wrap: 45, finish: 50, stop: 55, replan: 10, limitRetry: 30 }
   notify:
     - plugin: telegram
@@ -63,18 +64,19 @@ The planner names the model of each task it adds. Its prompt lists the models th
 
 ## Settings
 
-| Key                  | Default   | Meaning                                                                                 |
-| -------------------- | --------- | --------------------------------------------------------------------------------------- |
-| `pool`               | 1         | Tasks that run at once. `--pool` and `ORDO_POOL` override it.                           |
-| `minutes.tick`       | 10        | The worker is told "minute N of `stop`, keep working" this often, until `wrap`.         |
-| `minutes.remind`     | 30        | First reminder: estimate what is left. Does not interrupt the current tool call.        |
-| `minutes.wrap`       | 45        | Finish the current unit of work and hand in.                                            |
-| `minutes.finish`     | 50        | Hand in at once.                                                                        |
-| `minutes.stop`       | 55        | The session is closed; the task becomes `interrupted` (see Continuations).              |
-| `minutes.replan`     | 10        | Time of a planner or decider session.                                                   |
-| `minutes.limitRetry` | 30        | Wait after a usage limit with no known reset time; how long the planner fallback plans. |
-| `notify`             | none      | Notifiers; see the README. Secrets come from the environment.                           |
-| `disallowedTools`    | see below | Tools sessions may not use. Replaces the default list.                                  |
+| Key                  | Default   | Meaning                                                                                                                                                                                                                                                    |
+| -------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pool`               | 1         | Tasks that run at once. `--pool` and `ORDO_POOL` override it.                                                                                                                                                                                              |
+| `minFreeMB`          | 1024      | Free space needed where session transcripts are written before a session starts. Below it no session starts (mode `waiting-disk`), the owner is notified, and the dispatcher looks again every 5 minutes; running sessions go on. `0` turns the check off. |
+| `minutes.tick`       | 10        | The worker is told "minute N of `stop`, keep working" this often, until `wrap`.                                                                                                                                                                            |
+| `minutes.remind`     | 30        | First reminder: estimate what is left. Does not interrupt the current tool call.                                                                                                                                                                           |
+| `minutes.wrap`       | 45        | Finish the current unit of work and hand in.                                                                                                                                                                                                               |
+| `minutes.finish`     | 50        | Hand in at once.                                                                                                                                                                                                                                           |
+| `minutes.stop`       | 55        | The session is closed; the task becomes `interrupted` (see Continuations).                                                                                                                                                                                 |
+| `minutes.replan`     | 10        | Time of a planner or decider session.                                                                                                                                                                                                                      |
+| `minutes.limitRetry` | 30        | Wait after a usage limit with no known reset time; how long the planner fallback plans.                                                                                                                                                                    |
+| `notify`             | none      | Notifiers; see the README. Secrets come from the environment.                                                                                                                                                                                              |
+| `disallowedTools`    | see below | Tools sessions may not use. Replaces the default list.                                                                                                                                                                                                     |
 
 `remind < wrap < finish < stop` is required. The dispatcher owns time: the worker is told not to read the clock or judge time by its number of turns, and it stops for time only when one of these reminders arrives. So do not set time limits in the context or in a task ("no more than 45 minutes", "after minute 40 start nothing new"): a worker told so guesses the time and hands in early. Say what to finish when a reminder arrives instead. `ordo check` warns about a number with a unit of time (English or Ukrainian) in the context or an open task, and about a state larger than 10 KB. The default `disallowedTools` are `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode`, `CronCreate`, `CronDelete`, `CronList`, `ScheduleWakeup`, `RemoteTrigger`, `PushNotification`, `Monitor`, `EnterWorktree`, `ExitWorktree`.
 

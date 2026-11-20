@@ -240,6 +240,8 @@ export function harness(file: string, extra: Partial<DispatcherOptions> = {}): H
     log,
     notifiers: () => [notifier],
     paths: orderPaths(file, env),
+    // Tests do not depend on the free space of the machine.
+    freeBytes: () => Number.MAX_SAFE_INTEGER,
     ...extra,
   });
   return { file, host, clock, log, notifier, dispatcher };

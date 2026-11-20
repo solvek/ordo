@@ -3,7 +3,7 @@
 // the planner when the backlog needs a decision. The order's files are its memory: a dispatcher
 // started again continues from them. The owner may edit the order file while it runs; the
 // dispatcher reads it again before it starts a session.
-import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, statfsSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { type ControlRequest, type ControlResponse } from "./control.ts";
 import { type OrderPaths, acquireLock, orderPaths, readOrderText } from "./files.ts";
@@ -11,6 +11,7 @@ import { type Log, silentLog } from "./logger.ts";
 import { type Notice, type NoticeKind, type Notifier } from "./notify.ts";
 import {
   DeciderReply,
+  DEFAULT_MIN_FREE_MB,
   DEFAULT_MINUTES,
   type Minutes,
   type ModelSpec,
@@ -101,6 +102,9 @@ const LONG_LIMIT_MS = 60 * 60_000;
 const USAGE_WARNING = 0.9;
 /** A replan that fails this many times in a row stops the dispatcher. */
 const REPLAN_ATTEMPTS = 2;
+/** While free space is short, it is looked at again this often. */
+const DISK_RECHECK_MS = 5 * 60_000;
+const MB = 1024 * 1024;
 
 /**
  * `done`: no task left and no open question. `stopped`: the owner stopped it. `replan-failed`:
@@ -128,6 +132,13 @@ export interface DispatcherOptions {
   /** Pool size over the order's `settings.pool`. */
   pool?: number;
   paths?: OrderPaths;
+  /** Free bytes on the file system of a directory. Defaults to `statfs`. */
+  freeBytes?: (dir: string) => number;
+}
+
+function statfsFree(dir: string): number {
+  const stats = statfsSync(dir);
+  return stats.bavail * stats.bsize;
 }
 
 class ConflictError extends Error {
@@ -204,6 +215,8 @@ export class Dispatcher {
   private limitSince: number | null = null;
   private limitTimer: Timer | null = null;
   private limitNotified = false;
+  private diskLowSince: number | null = null;
+  private diskTimer: Timer | null = null;
   /** Until when the planner runs as its fallback, because its own plugin is limited. */
   private fallbackUntil: number | null = null;
   private readonly usageNotified = new Set<string>();
@@ -384,7 +397,10 @@ export class Dispatcher {
     let since: number | null = this.modeSince;
     if (this.mode === "stopping" || this.halted) mode = "stopping";
     else if (this.mode === "pausing" || this.mode === "paused") mode = this.mode;
-    else if (this.limitUntil !== null) {
+    else if (this.diskLowSince !== null) {
+      mode = "waiting-disk";
+      since = this.diskLowSince;
+    } else if (this.limitUntil !== null) {
       mode = "waiting-limit";
       since = this.limitSince;
     } else if (this.meta?.kind === "planner") {
@@ -489,17 +505,25 @@ export class Dispatcher {
       return;
     }
     if (this.limitUntil !== null) return;
+    // Every session start checks the free space first; without it nothing starts and the
+    // dispatcher waits, so the run is neither done nor stuck.
     if (this.meta === null) {
-      if ((this.order.replan?.length ?? 0) > 0) this.startPlanner();
-      else if (this.order.decider !== undefined) {
+      if ((this.order.replan?.length ?? 0) > 0) {
+        if (!this.enoughDisk()) return;
+        this.startPlanner();
+      } else if (this.order.decider !== undefined) {
         const untried = openQuestions(this.order).filter((q) => !this.deciderTried.has(q.id));
-        if (untried.length > 0) this.startDecider(untried.map((q) => q.id));
+        if (untried.length > 0) {
+          if (!this.enoughDisk()) return;
+          this.startDecider(untried.map((q) => q.id));
+        }
       }
     }
     if (this.meta === null && this.mode === "running") {
       for (const task of runnableTasks(this.order)) {
         if (this.workers.size >= this.pool) break;
         if (this.workers.has(task.id)) continue;
+        if (!this.enoughDisk()) return;
         this.startWorker(task);
       }
     }
@@ -995,10 +1019,58 @@ export class Dispatcher {
     }
   }
 
+  /**
+   * Whether there is room for one more session where transcripts are written. When there is
+   * not, the dispatcher starts nothing, tells the owner once, and looks again every few minutes;
+   * running sessions go on. A full disk would lose transcripts and the order files.
+   */
+  private enoughDisk(): boolean {
+    const minMb = this.order.settings?.minFreeMB ?? DEFAULT_MIN_FREE_MB;
+    if (minMb <= 0) return true;
+    let free: number;
+    try {
+      free = (this.options.freeBytes ?? statfsFree)(this.paths.sessions);
+    } catch (error: unknown) {
+      this.log.warn("free space is not known", { error: errorText(error) });
+      return true;
+    }
+    const freeMb = Math.floor(free / MB);
+    if (free >= minMb * MB) {
+      if (this.diskLowSince !== null) {
+        this.diskLowSince = null;
+        this.diskTimer?.cancel();
+        this.diskTimer = null;
+        this.log.warn("free space is back; going on", { freeMB: freeMb });
+        this.notify("disk", `${String(freeMb)} MB are free again; the dispatcher goes on.`);
+      }
+      return true;
+    }
+    if (this.diskLowSince === null) {
+      this.diskLowSince = this.clock.now();
+      this.log.error("too little free space: no session starts until there is more", {
+        dir: this.paths.sessions,
+        freeMB: freeMb,
+        minFreeMB: minMb,
+      });
+      this.notify(
+        "disk",
+        `Only ${String(freeMb)} MB are free where the session transcripts are written (${this.paths.sessions}). No session starts until ${String(minMb)} MB are free; running sessions go on. The dispatcher looks again every ${String(DISK_RECHECK_MS / 60_000)} minutes.`,
+      );
+    }
+    this.diskTimer ??= this.clock.delay(DISK_RECHECK_MS, () => {
+      this.guard(() => {
+        this.diskTimer = null;
+        this.pump();
+      });
+    });
+    return false;
+  }
+
   private finish(result: RunResult): void {
     if (this.halted) return;
     this.halted = true;
     this.limitTimer?.cancel();
+    this.diskTimer?.cancel();
     for (const run of [...this.workers.values()]) this.settleWorker(run);
     if (this.meta !== null) this.settleMeta(this.meta);
     const data = result.detail === undefined ? { reason: result.reason } : { ...result };
